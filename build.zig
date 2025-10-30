@@ -194,7 +194,7 @@ pub fn build(b: *std.Build) void {
     const cross_compat_exe = b.addExecutable(.{
         .name = "test_cross_compat",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("test_cross_compat.zig"),
+            .root_source_file = b.path("src/test_compat.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -222,7 +222,7 @@ pub fn build(b: *std.Build) void {
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
-    // set the releative field.
+    // set the relative field.
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -246,58 +246,6 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
-
-    // Examples
-    const example_basic = b.addExecutable(.{
-        .name = "example_basic",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/basic_compression.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "lz4", .module = mod },
-            },
-        }),
-    });
-
-    const run_example_basic = b.step("example-basic", "Run basic compression example");
-    const run_example_basic_cmd = b.addRunArtifact(example_basic);
-    run_example_basic.dependOn(&run_example_basic_cmd.step);
-    run_example_basic_cmd.step.dependOn(b.getInstallStep());
-
-    const example_hc = b.addExecutable(.{
-        .name = "example_hc",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/hc_compression.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "lz4", .module = mod },
-            },
-        }),
-    });
-
-    const run_example_hc = b.step("example-hc", "Run HC compression example");
-    const run_example_hc_cmd = b.addRunArtifact(example_hc);
-    run_example_hc.dependOn(&run_example_hc_cmd.step);
-    run_example_hc_cmd.step.dependOn(b.getInstallStep());
-
-    const example_frame = b.addExecutable(.{
-        .name = "example_frame",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/frame_format.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "lz4", .module = mod },
-            },
-        }),
-    });
-
-    const run_example_frame = b.step("example-frame", "Run frame format example");
-    const run_example_frame_cmd = b.addRunArtifact(example_frame);
-    run_example_frame.dependOn(&run_example_frame_cmd.step);
-    run_example_frame_cmd.step.dependOn(b.getInstallStep());
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
