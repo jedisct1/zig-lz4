@@ -10,8 +10,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const io = std.Io.Threaded.global_single_threaded.io();
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     try stdout.print("\nLZ4F Frame Format - Test Suite\n", .{});
@@ -310,6 +311,8 @@ fn testIndependentBlocks(allocator: std.mem.Allocator, stdout: anytype) !void {
 fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 8: Validate against reference implementation\n", .{});
 
+    const io = std.Io.Threaded.global_single_threaded.io();
+
     // Create test data file
     const testData = "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. " ** 20;
     const testFile = "/tmp/zig_lz4f_test.txt";
@@ -318,20 +321,15 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
 
     // Write test data
     {
-        const file = try std.fs.createFileAbsolute(testFile, .{});
-        defer file.close();
-        try file.writeAll(testData);
+        const file = try std.Io.Dir.createFileAbsolute(io, testFile, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, testData);
     }
 
     // Compress with our implementation
     {
-        const file = try std.fs.openFileAbsolute(testFile, .{});
-        defer file.close();
-
-        const file_size = (try file.stat()).size;
-        const data = try allocator.alloc(u8, file_size);
+        const data = try std.Io.Dir.cwd().readFileAlloc(io, testFile, allocator, .unlimited);
         defer allocator.free(data);
-        _ = try file.readAll(data);
 
         const maxCompressed = lz4f.compressFrameBound(data.len, null);
         const compressed = try allocator.alloc(u8, maxCompressed);
@@ -339,16 +337,15 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
 
         const compressedSize = try lz4f.compressFrame(allocator, data, compressed, null);
 
-        const outFile = try std.fs.createFileAbsolute(compressedFile, .{});
-        defer outFile.close();
-        try outFile.writeAll(compressed[0..compressedSize]);
+        const outFile = try std.Io.Dir.createFileAbsolute(io, compressedFile, .{});
+        defer outFile.close(io);
+        try outFile.writeStreamingAll(io, compressed[0..compressedSize]);
     }
 
     try stdout.print("  Compressed test file with Zig implementation\n", .{});
 
     // Try to decompress with reference lz4 command
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "lz4",
             "-d",
@@ -367,7 +364,7 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
     }
 
     const success = switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 
@@ -381,22 +378,15 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
     try stdout.print("  Reference lz4 decompressed successfully\n", .{});
 
     // Verify decompressed data matches original
-    const decompressed = blk: {
-        const file = try std.fs.openFileAbsolute(decompressedFile, .{});
-        defer file.close();
-        const file_size = (try file.stat()).size;
-        const data = try allocator.alloc(u8, file_size);
-        _ = try file.readAll(data);
-        break :blk data;
-    };
+    const decompressed = try std.Io.Dir.cwd().readFileAlloc(io, decompressedFile, allocator, .unlimited);
     defer allocator.free(decompressed);
 
     try testing.expectEqualSlices(u8, testData, decompressed);
 
     // Clean up
-    std.fs.deleteFileAbsolute(testFile) catch {};
-    std.fs.deleteFileAbsolute(compressedFile) catch {};
-    std.fs.deleteFileAbsolute(decompressedFile) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, testFile) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, compressedFile) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, decompressedFile) catch {};
 
     try stdout.print("  ✓ Data validated against reference implementation\n", .{});
     try stdout.print("  ✓ PASS\n\n", .{});

@@ -10,8 +10,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const io = std.Io.Threaded.global_single_threaded.io();
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     try stdout.print("\nLZ4F + HC Integration Test Suite\n", .{});
@@ -203,6 +204,8 @@ fn testHCLargeInput(allocator: std.mem.Allocator, stdout: anytype) !void {
 fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 5: Validate HC output with reference lz4 tool\n", .{});
 
+    const io = std.Io.Threaded.global_single_threaded.io();
+
     const input = "The quick brown fox jumps over the lazy dog. " ** 100;
 
     const prefs = lz4f.Preferences{
@@ -221,19 +224,18 @@ fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !v
     const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
 
     // Write to temp file
-    const tmpDir = std.fs.cwd();
-    const tmpFile = try tmpDir.createFile("test_hc_frame_compressed.lz4", .{});
-    defer tmpFile.close();
-    defer tmpDir.deleteFile("test_hc_frame_compressed.lz4") catch {};
+    const tmpDir = std.Io.Dir.cwd();
+    const tmpFile = try tmpDir.createFile(io, "test_hc_frame_compressed.lz4", .{});
+    defer tmpFile.close(io);
+    defer tmpDir.deleteFile(io, "test_hc_frame_compressed.lz4") catch {};
 
-    try tmpFile.writeAll(compressed[0..compressedSize]);
+    try tmpFile.writeStreamingAll(io, compressed[0..compressedSize]);
     try stdout.print("  Wrote compressed data to test_hc_frame_compressed.lz4\n", .{});
 
     // Try to decompress with reference lz4 tool
     try stdout.print("  Running: lz4 -d -f --content-size test_hc_frame_compressed.lz4 test_hc_frame_decompressed.txt\n", .{});
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "lz4",
             "-d",
@@ -250,21 +252,16 @@ fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !v
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (result.term.exited != 0) {
         try stdout.print("  ✗ lz4 decompression failed:\n", .{});
         try stdout.print("{s}\n", .{result.stderr});
         return error.ReferenceValidationFailed;
     }
 
     // Read decompressed data
-    const decompressedFile = try tmpDir.openFile("test_hc_frame_decompressed.txt", .{});
-    defer decompressedFile.close();
-    defer tmpDir.deleteFile("test_hc_frame_decompressed.txt") catch {};
-
-    const stat = try decompressedFile.stat();
-    const decompressed = try allocator.alloc(u8, @intCast(stat.size));
+    const decompressed = try tmpDir.readFileAlloc(io, "test_hc_frame_decompressed.txt", allocator, .unlimited);
     defer allocator.free(decompressed);
-    _ = try decompressedFile.readAll(decompressed);
+    defer tmpDir.deleteFile(io, "test_hc_frame_decompressed.txt") catch {};
 
     try testing.expectEqualSlices(u8, input, decompressed);
     try stdout.print("  ✓ Reference lz4 tool successfully decompressed HC frame\n\n", .{});

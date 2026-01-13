@@ -68,6 +68,11 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize threaded IO with a real allocator for process spawning
+    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
     std.debug.print("\n=== LZ4 Reference Compatibility Test Suite ===\n\n", .{});
 
     const test_data = try TestData.init(allocator);
@@ -83,7 +88,7 @@ pub fn main() !void {
     std.debug.print("{s}\n", .{"-" ** 60});
     for (test_cases) |tc| {
         total_tests += 1;
-        if (testFrameFormat(allocator, tc.name, tc.data, null)) {
+        if (testFrameFormat(allocator, io, tc.name, tc.data, null)) {
             passed_tests += 1;
             std.debug.print("✓ {s:<20} PASS\n", .{tc.name});
         } else |err| {
@@ -97,7 +102,7 @@ pub fn main() !void {
     std.debug.print("{s}\n", .{"-" ** 60});
     for (test_cases) |tc| {
         total_tests += 1;
-        if (testFrameFormatReverse(allocator, tc.name, tc.data)) {
+        if (testFrameFormatReverse(allocator, io, tc.name, tc.data)) {
             passed_tests += 1;
             std.debug.print("✓ {s:<20} PASS\n", .{tc.name});
         } else |err| {
@@ -114,7 +119,7 @@ pub fn main() !void {
         // Test with repeated pattern (best compression test)
         const tc = test_cases[1]; // repeated pattern
         total_tests += 1;
-        if (testFrameFormat(allocator, tc.name, tc.data, level)) {
+        if (testFrameFormat(allocator, io, tc.name, tc.data, level)) {
             passed_tests += 1;
             std.debug.print("✓ Level {d:<2} ({s:<10})  PASS\n", .{ level, tc.name });
         } else |err| {
@@ -138,7 +143,9 @@ pub fn main() !void {
     }
 }
 
-fn testFrameFormat(allocator: std.mem.Allocator, name: []const u8, src: []const u8, compression_level: ?i32) !void {
+fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, src: []const u8, compression_level: ?i32) !void {
+    const cwd = std.Io.Dir.cwd();
+
     // Compress with frame format
     const prefs = if (compression_level) |level| lz4f.Preferences{
         .compressionLevel = level,
@@ -156,9 +163,9 @@ fn testFrameFormat(allocator: std.mem.Allocator, name: []const u8, src: []const 
     else
         try std.fmt.bufPrint(&filename_buf, "compat_test_frame_{s}.lz4", .{name});
     {
-        const file = try std.fs.cwd().createFile(compressed_file, .{});
-        defer file.close();
-        try file.writeAll(compressed[0..compressed_size]);
+        const file = try cwd.createFile(io, compressed_file, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, compressed[0..compressed_size]);
     }
 
     // Decompress with lz4 tool
@@ -168,13 +175,12 @@ fn testFrameFormat(allocator: std.mem.Allocator, name: []const u8, src: []const 
     else
         try std.fmt.bufPrint(&decompressed_file_buf, "compat_test_frame_{s}.txt", .{name});
 
-    std.fs.cwd().deleteFile(decompressed_file) catch {};
+    cwd.deleteFile(io, decompressed_file) catch {};
 
     var cmd_buf: [512]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, "lz4 -d -f {s} {s}", .{ compressed_file, decompressed_file });
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "sh", "-c", cmd },
     });
     defer {
@@ -182,13 +188,13 @@ fn testFrameFormat(allocator: std.mem.Allocator, name: []const u8, src: []const 
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
+    if (result.term.exited != 0) {
         std.debug.print("\nFrame decompression failed: {s}\n", .{result.stderr});
         return error.DecompressionFailed;
     }
 
     // Verify
-    const decompressed = try std.fs.cwd().readFileAlloc(decompressed_file, allocator, std.Io.Limit.limited(1024 * 1024));
+    const decompressed = try cwd.readFileAlloc(io, decompressed_file, allocator, .limited(1024 * 1024));
     defer allocator.free(decompressed);
 
     if (!std.mem.eql(u8, src, decompressed)) {
@@ -196,31 +202,32 @@ fn testFrameFormat(allocator: std.mem.Allocator, name: []const u8, src: []const 
     }
 
     // Cleanup
-    try std.fs.cwd().deleteFile(compressed_file);
-    try std.fs.cwd().deleteFile(decompressed_file);
+    try cwd.deleteFile(io, compressed_file);
+    try cwd.deleteFile(io, decompressed_file);
 }
 
-fn testFrameFormatReverse(allocator: std.mem.Allocator, name: []const u8, src: []const u8) !void {
+fn testFrameFormatReverse(allocator: std.mem.Allocator, io: std.Io, name: []const u8, src: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+
     // Write source
     var src_file_buf: [256]u8 = undefined;
     const src_file = try std.fmt.bufPrint(&src_file_buf, "compat_test_frame_{s}_src2.txt", .{name});
     {
-        const file = try std.fs.cwd().createFile(src_file, .{});
-        defer file.close();
-        try file.writeAll(src);
+        const file = try cwd.createFile(io, src_file, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, src);
     }
 
     // Compress with lz4 tool
     var compressed_file_buf: [256]u8 = undefined;
     const compressed_file = try std.fmt.bufPrint(&compressed_file_buf, "compat_test_frame_{s}_lz4.lz4", .{name});
 
-    std.fs.cwd().deleteFile(compressed_file) catch {};
+    cwd.deleteFile(io, compressed_file) catch {};
 
     var cmd_buf: [512]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, "lz4 -f {s} {s}", .{ src_file, compressed_file });
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "sh", "-c", cmd },
     });
     defer {
@@ -228,13 +235,13 @@ fn testFrameFormatReverse(allocator: std.mem.Allocator, name: []const u8, src: [
         allocator.free(result.stderr);
     }
 
-    if (result.term.Exited != 0) {
-        std.fs.cwd().deleteFile(src_file) catch {};
+    if (result.term.exited != 0) {
+        cwd.deleteFile(io, src_file) catch {};
         return error.CompressionFailed;
     }
 
     // Read compressed
-    const compressed = try std.fs.cwd().readFileAlloc(compressed_file, allocator, std.Io.Limit.limited(1024 * 1024));
+    const compressed = try cwd.readFileAlloc(io, compressed_file, allocator, .limited(1024 * 1024));
     defer allocator.free(compressed);
 
     // Decompress with our frame format
@@ -249,6 +256,6 @@ fn testFrameFormatReverse(allocator: std.mem.Allocator, name: []const u8, src: [
     }
 
     // Cleanup
-    try std.fs.cwd().deleteFile(src_file);
-    try std.fs.cwd().deleteFile(compressed_file);
+    try cwd.deleteFile(io, src_file);
+    try cwd.deleteFile(io, compressed_file);
 }
