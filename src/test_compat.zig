@@ -64,9 +64,7 @@ const TestData = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     // Initialize threaded IO with a real allocator for process spawning
     var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });

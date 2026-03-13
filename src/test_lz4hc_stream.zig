@@ -6,9 +6,7 @@ const lz4 = @import("lz4.zig");
 const lz4hc = @import("lz4hc.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     std.debug.print("\n=== LZ4 HC Streaming API Tests ===\n\n", .{});
 

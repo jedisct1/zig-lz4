@@ -5,9 +5,7 @@ const lz4f = @import("lz4f.zig");
 const testing = std.testing;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     std.debug.print("\nLZ4F + HC Integration Test\n", .{});
     std.debug.print("===========================\n\n", .{});

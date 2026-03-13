@@ -6,9 +6,7 @@ const lz4f = @import("lz4f.zig");
 const testing = std.testing;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     const io = std.Io.Threaded.global_single_threaded.io();
     var stdout_buffer: [4096]u8 = undefined;

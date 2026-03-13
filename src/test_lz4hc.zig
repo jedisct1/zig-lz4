@@ -5,9 +5,7 @@ const lz4hc = @import("lz4hc.zig");
 const testing = std.testing;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     std.debug.print("\n=== LZ4 HC Test Suite ===\n\n", .{});
 
