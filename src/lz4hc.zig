@@ -404,8 +404,8 @@ pub const Context = struct {
 
     pub fn init() Context {
         return .{
-            .hashTable = [_]u32{0} ** LZ4HC_HASHTABLESIZE,
-            .chainTable = [_]u16{0} ** LZ4HC_MAXD,
+            .hashTable = @splat(0),
+            .chainTable = @splat(0),
             .end = undefined,
             .prefixStart = undefined,
             .dictStart = undefined,

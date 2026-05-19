@@ -83,7 +83,7 @@ pub fn main() !void {
 
     // Test 1: Frame format (fast) - Zig -> lz4 tool
     std.debug.print("Test Group 1: Frame Format Fast (Zig compress -> lz4 decompress)\n", .{});
-    std.debug.print("{s}\n", .{"-" ** 60});
+    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
     for (test_cases) |tc| {
         total_tests += 1;
         if (testFrameFormat(allocator, io, tc.name, tc.data, null)) {
@@ -97,7 +97,7 @@ pub fn main() !void {
 
     // Test 2: Frame format (fast) - lz4 tool -> Zig
     std.debug.print("Test Group 2: Frame Format Fast (lz4 compress -> Zig decompress)\n", .{});
-    std.debug.print("{s}\n", .{"-" ** 60});
+    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
     for (test_cases) |tc| {
         total_tests += 1;
         if (testFrameFormatReverse(allocator, io, tc.name, tc.data)) {
@@ -111,7 +111,7 @@ pub fn main() !void {
 
     // Test 3: Frame format with HC - all levels
     std.debug.print("Test Group 3: Frame Format HC (all levels 2-12)\n", .{});
-    std.debug.print("{s}\n", .{"-" ** 60});
+    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
     const levels = [_]i32{ 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
     for (levels) |level| {
         // Test with repeated pattern (best compression test)

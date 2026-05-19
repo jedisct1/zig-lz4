@@ -5,6 +5,11 @@ const std = @import("std");
 const lz4f = @import("lz4f.zig");
 const testing = std.testing;
 
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
@@ -215,7 +220,7 @@ fn testBlockChecksum(allocator: std.mem.Allocator, stdout: anytype) !void {
 fn testDifferentBlockSizes(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 6: Different block sizes\n", .{});
 
-    const input = "A" ** 1000;
+    const input = &@as([1000]u8, @splat('A'));
     const blockSizes = [_]lz4f.BlockSizeID{
         .max64KB,
         .max256KB,
@@ -256,7 +261,7 @@ fn testDifferentBlockSizes(allocator: std.mem.Allocator, stdout: anytype) !void 
 fn testIndependentBlocks(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 7: Independent vs linked blocks\n", .{});
 
-    const input = "Hello " ** 100; // Repeated pattern
+    const input = repeatString(100, "Hello "); // Repeated pattern
 
     // Test linked blocks (default)
     const linkedPrefs = lz4f.Preferences{
@@ -312,7 +317,7 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Create test data file
-    const testData = "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. " ** 20;
+    const testData = repeatString(20, "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. ");
     const testFile = "/tmp/zig_lz4f_test.txt";
     const compressedFile = "/tmp/zig_lz4f_test.txt.lz4";
     const decompressedFile = "/tmp/zig_lz4f_test.txt.lz4.dec";

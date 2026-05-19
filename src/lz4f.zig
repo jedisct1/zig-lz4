@@ -6,6 +6,11 @@ const std = @import("std");
 const lz4 = @import("lz4.zig");
 const lz4hc = @import("lz4hc.zig");
 
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 // ===== Constants =====
 
 /// LZ4 Frame magic number (little endian)
@@ -675,7 +680,7 @@ test "LZ4F compress/decompress frame" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const input = "Hello, World! This is a test of LZ4 frame compression. " ** 10;
+    const input = repeatString(10, "Hello, World! This is a test of LZ4 frame compression. ");
 
     // Compress
     const maxCompressed = compressFrameBound(input.len, null);

@@ -123,7 +123,7 @@ pub fn main() !void {
     {
         try stdout.print("Test 2: Repeated pattern...\n", .{});
         try stdout.flush();
-        const original = "AAAAAAAAAAAAAAAA" ** 10; // 160 bytes of 'A'
+        const original = &@as([160]u8, @splat('A')); // 160 bytes of 'A'
 
         const maxCompressed = lz4.compressBound(original.len);
         const compressed = try allocator.alloc(u8, maxCompressed);

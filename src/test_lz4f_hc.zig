@@ -5,6 +5,11 @@ const std = @import("std");
 const lz4f = @import("lz4f.zig");
 const testing = std.testing;
 
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
@@ -28,7 +33,7 @@ pub fn main() !void {
 fn testHCCompression(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 1: Basic HC compression with frame format\n", .{});
 
-    const input = "Hello, World! This is a test of LZ4 HC with frame compression. " ** 10;
+    const input = repeatString(10, "Hello, World! This is a test of LZ4 HC with frame compression. ");
 
     // Test fast mode (level 0) vs HC mode (level 9)
     const prefs_fast = lz4f.Preferences{ .compressionLevel = 0 };
@@ -86,7 +91,7 @@ fn testHCCompression(allocator: std.mem.Allocator, stdout: anytype) !void {
 fn testHCAllLevels(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 2: All HC compression levels (2-12)\n", .{});
 
-    const input = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" ** 100;
+    const input = repeatString(100, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
 
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
@@ -204,7 +209,7 @@ fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !v
 
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const input = "The quick brown fox jumps over the lazy dog. " ** 100;
+    const input = repeatString(100, "The quick brown fox jumps over the lazy dog. ");
 
     const prefs = lz4f.Preferences{
         .compressionLevel = 9,

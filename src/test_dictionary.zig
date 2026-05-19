@@ -78,7 +78,7 @@ test "dictionary decompression - streaming" {
 test "compressDestSize - fits exactly" {
     const allocator = std.testing.allocator;
 
-    const original = "AAAAAAAAAA" ** 20; // 200 bytes
+    const original = &@as([200]u8, @splat('A')); // 200 bytes
 
     // Destination smaller than full compressed size
     const dstSize = 50;

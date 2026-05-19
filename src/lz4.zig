@@ -264,7 +264,7 @@ pub const HashTable = struct {
     table: [LZ4_HASH_SIZE_U32]u32,
 
     pub fn init() HashTable {
-        return .{ .table = [_]u32{0} ** LZ4_HASH_SIZE_U32 };
+        return .{ .table = @splat(0) };
     }
 
     fn get(self: *const HashTable, hash: u32) u32 {
@@ -775,7 +775,7 @@ pub const Stream = struct {
     /// Initialize a stream (for stack-allocated streams)
     pub fn init() Stream {
         return .{
-            .hashTable = [_]u32{0} ** LZ4_HASH_SIZE_U32,
+            .hashTable = @splat(0),
             .dictionary = null,
             .dictCtx = null,
             .currentOffset = 0,

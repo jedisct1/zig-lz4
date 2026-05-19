@@ -4,6 +4,11 @@ const std = @import("std");
 const lz4f = @import("lz4f.zig");
 const testing = std.testing;
 
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
@@ -13,7 +18,7 @@ pub fn main() !void {
     // Test 1: Basic HC compression
     std.debug.print("Test 1: Basic HC compression\n", .{});
 
-    const input = "Hello, World! " ** 10;
+    const input = repeatString(10, "Hello, World! ");
 
     const prefs_hc = lz4f.Preferences{ .compressionLevel = 9 };
     const maxCompressed = lz4f.compressFrameBound(input.len, prefs_hc);

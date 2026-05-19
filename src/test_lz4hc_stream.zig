@@ -5,6 +5,11 @@ const std = @import("std");
 const lz4 = @import("lz4.zig");
 const lz4hc = @import("lz4hc.zig");
 
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
@@ -232,7 +237,7 @@ fn testLoadDict(allocator: std.mem.Allocator) !void {
     defer stream.destroy();
 
     // Create a dictionary with common patterns
-    const dictionary = "The quick brown fox jumps over the lazy dog. " ** 10;
+    const dictionary = repeatString(10, "The quick brown fox jumps over the lazy dog. ");
 
     // Load dictionary
     const dictSize = try stream.loadDict(dictionary);
@@ -267,7 +272,8 @@ fn testSaveDict(allocator: std.mem.Allocator) !void {
     defer stream.destroy();
 
     // Compress some data
-    const input1 = "The quick brown fox jumps over the lazy dog. " ** 5;
+    const input1 = repeatString(5, "The quick brown fox jumps over the lazy dog. ");
+
     var compressed1: [512]u8 = undefined;
     _ = try stream.compressContinue(input1, &compressed1);
 
