@@ -1,7 +1,5 @@
-// Comprehensive compatibility test with reference lz4 implementation
+//! Compatibility test suite against the reference lz4 command-line tool.
 const std = @import("std");
-const lz4 = @import("lz4.zig");
-const lz4hc = @import("lz4hc.zig");
 const lz4f = @import("lz4f.zig");
 
 const TestCase = struct {
@@ -15,6 +13,8 @@ const text_data =
     \\Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
 ;
 
+const separator: [60]u8 = @splat('-');
+
 const TestData = struct {
     repeated: []u8,
     random: []u8,
@@ -23,19 +23,16 @@ const TestData = struct {
     cases: [6]TestCase,
 
     pub fn init(allocator: std.mem.Allocator) !TestData {
-        // Repeated pattern (good compression)
         const repeated = try allocator.alloc(u8, 1000);
         for (0..125) |i| {
             @memcpy(repeated[i * 8 ..][0..8], "ABCDEFGH");
         }
 
-        // Random data (incompressible)
         const random = try allocator.alloc(u8, 256);
         var prng = std.Random.DefaultPrng.init(12345);
         const rand = prng.random();
         rand.bytes(random);
 
-        // Large data (multiple blocks in frame format)
         const large = try allocator.alloc(u8, 100000);
         for (0..large.len) |i| {
             large[i] = @intCast(i % 256);
@@ -77,52 +74,47 @@ pub fn main(init: std.process.Init) !void {
     var total_tests: usize = 0;
     var passed_tests: usize = 0;
 
-    // Test 1: Frame format (fast) - Zig -> lz4 tool
     std.debug.print("Test Group 1: Frame Format Fast (Zig compress -> lz4 decompress)\n", .{});
-    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
+    std.debug.print("{s}\n", .{&separator});
     for (test_cases) |tc| {
         total_tests += 1;
         if (testFrameFormat(allocator, io, tc.name, tc.data, null)) {
             passed_tests += 1;
-            std.debug.print("✓ {s:<20} PASS\n", .{tc.name});
+            std.debug.print("{s:<20} PASS\n", .{tc.name});
         } else |err| {
-            std.debug.print("✗ {s:<20} FAIL: {}\n", .{ tc.name, err });
+            std.debug.print("{s:<20} FAIL: {}\n", .{ tc.name, err });
         }
     }
     std.debug.print("\n", .{});
 
-    // Test 2: Frame format (fast) - lz4 tool -> Zig
     std.debug.print("Test Group 2: Frame Format Fast (lz4 compress -> Zig decompress)\n", .{});
-    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
+    std.debug.print("{s}\n", .{&separator});
     for (test_cases) |tc| {
         total_tests += 1;
         if (testFrameFormatReverse(allocator, io, tc.name, tc.data)) {
             passed_tests += 1;
-            std.debug.print("✓ {s:<20} PASS\n", .{tc.name});
+            std.debug.print("{s:<20} PASS\n", .{tc.name});
         } else |err| {
-            std.debug.print("✗ {s:<20} FAIL: {}\n", .{ tc.name, err });
+            std.debug.print("{s:<20} FAIL: {}\n", .{ tc.name, err });
         }
     }
     std.debug.print("\n", .{});
 
-    // Test 3: Frame format with HC - all levels
     std.debug.print("Test Group 3: Frame Format HC (all levels 2-12)\n", .{});
-    std.debug.print("{s}\n", .{&@as([60]u8, @splat('-'))});
+    std.debug.print("{s}\n", .{&separator});
     const levels = [_]i32{ 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+    const repeated_case = test_cases[1];
     for (levels) |level| {
-        // Test with repeated pattern (best compression test)
-        const tc = test_cases[1]; // repeated pattern
         total_tests += 1;
-        if (testFrameFormat(allocator, io, tc.name, tc.data, level)) {
+        if (testFrameFormat(allocator, io, repeated_case.name, repeated_case.data, level)) {
             passed_tests += 1;
-            std.debug.print("✓ Level {d:<2} ({s:<10})  PASS\n", .{ level, tc.name });
+            std.debug.print("Level {d:<2} ({s:<10})  PASS\n", .{ level, repeated_case.name });
         } else |err| {
-            std.debug.print("✗ Level {d:<2} ({s:<10})  FAIL: {}\n", .{ level, tc.name, err });
+            std.debug.print("Level {d:<2} ({s:<10})  FAIL: {}\n", .{ level, repeated_case.name, err });
         }
     }
     std.debug.print("\n", .{});
 
-    // Summary
     std.debug.print("=== Summary ===\n", .{});
     std.debug.print("Total tests: {}\n", .{total_tests});
     std.debug.print("Passed: {}\n", .{passed_tests});
@@ -130,9 +122,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Success rate: {d:.1}%\n\n", .{@as(f64, @floatFromInt(passed_tests)) / @as(f64, @floatFromInt(total_tests)) * 100.0});
 
     if (passed_tests == total_tests) {
-        std.debug.print("🎉 All tests passed! Full compatibility with reference implementation.\n", .{});
+        std.debug.print("All tests passed! Full compatibility with reference implementation.\n", .{});
     } else {
-        std.debug.print("❌ Some tests failed. Please review.\n", .{});
+        std.debug.print("Some tests failed. Please review.\n", .{});
         std.process.exit(1);
     }
 }
@@ -140,7 +132,6 @@ pub fn main(init: std.process.Init) !void {
 fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, src: []const u8, compression_level: ?i32) !void {
     const cwd = std.Io.Dir.cwd();
 
-    // Compress with frame format
     const prefs = if (compression_level) |level| lz4f.Preferences{
         .compressionLevel = level,
     } else null;
@@ -150,7 +141,6 @@ fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, s
 
     const compressed_size = try lz4f.compressFrame(allocator, src, compressed, prefs);
 
-    // Write to file
     var filename_buf: [256]u8 = undefined;
     const compressed_file = if (compression_level) |level|
         try std.fmt.bufPrint(&filename_buf, "compat_test_frame_{s}_hc{d}.lz4", .{ name, level })
@@ -162,7 +152,6 @@ fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, s
         try file.writeStreamingAll(io, compressed[0..compressed_size]);
     }
 
-    // Decompress with lz4 tool
     var decompressed_file_buf: [256]u8 = undefined;
     const decompressed_file = if (compression_level) |level|
         try std.fmt.bufPrint(&decompressed_file_buf, "compat_test_frame_{s}_hc{d}.txt", .{ name, level })
@@ -187,7 +176,6 @@ fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, s
         return error.DecompressionFailed;
     }
 
-    // Verify
     const decompressed = try cwd.readFileAlloc(io, decompressed_file, allocator, .limited(1024 * 1024));
     defer allocator.free(decompressed);
 
@@ -195,7 +183,6 @@ fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, s
         return error.DataMismatch;
     }
 
-    // Cleanup
     try cwd.deleteFile(io, compressed_file);
     try cwd.deleteFile(io, decompressed_file);
 }
@@ -203,7 +190,6 @@ fn testFrameFormat(allocator: std.mem.Allocator, io: std.Io, name: []const u8, s
 fn testFrameFormatReverse(allocator: std.mem.Allocator, io: std.Io, name: []const u8, src: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
 
-    // Write source
     var src_file_buf: [256]u8 = undefined;
     const src_file = try std.fmt.bufPrint(&src_file_buf, "compat_test_frame_{s}_src2.txt", .{name});
     {
@@ -212,7 +198,6 @@ fn testFrameFormatReverse(allocator: std.mem.Allocator, io: std.Io, name: []cons
         try file.writeStreamingAll(io, src);
     }
 
-    // Compress with lz4 tool
     var compressed_file_buf: [256]u8 = undefined;
     const compressed_file = try std.fmt.bufPrint(&compressed_file_buf, "compat_test_frame_{s}_lz4.lz4", .{name});
 
@@ -234,22 +219,18 @@ fn testFrameFormatReverse(allocator: std.mem.Allocator, io: std.Io, name: []cons
         return error.CompressionFailed;
     }
 
-    // Read compressed
     const compressed = try cwd.readFileAlloc(io, compressed_file, allocator, .limited(1024 * 1024));
     defer allocator.free(compressed);
 
-    // Decompress with our frame format
     const decompressed = try allocator.alloc(u8, src.len + 1000);
     defer allocator.free(decompressed);
 
     const decompressed_size = try lz4f.decompressFrame(allocator, compressed, decompressed);
 
-    // Verify
     if (!std.mem.eql(u8, src, decompressed[0..decompressed_size])) {
         return error.DataMismatch;
     }
 
-    // Cleanup
     try cwd.deleteFile(io, src_file);
     try cwd.deleteFile(io, compressed_file);
 }

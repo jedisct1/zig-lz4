@@ -10,10 +10,10 @@ inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
     return @ptrCast(&buf);
 }
 
-pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const io = std.Io.Threaded.global_single_threaded.io();
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
@@ -29,7 +29,7 @@ pub fn main() !void {
     try testBlockChecksum(allocator, stdout);
     try testDifferentBlockSizes(allocator, stdout);
     try testIndependentBlocks(allocator, stdout);
-    try testValidateWithReference(allocator, stdout);
+    try testValidateWithReference(allocator, io, stdout);
 
     try stdout.print("\n✓ All tests passed!\n\n", .{});
 }
@@ -303,10 +303,8 @@ fn testIndependentBlocks(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("  ✓ PASS\n\n", .{});
 }
 
-fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !void {
+fn testValidateWithReference(allocator: std.mem.Allocator, io: std.Io, stdout: anytype) !void {
     try stdout.print("Test 8: Validate against reference implementation\n", .{});
-
-    const io = std.Io.Threaded.global_single_threaded.io();
 
     const test_data = repeatString(20, "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. ");
     const test_file = "/tmp/zig_lz4f_test.txt";

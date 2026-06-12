@@ -1,6 +1,7 @@
-// Test suite for LZ4 HC compression
+//! Test suite for LZ4 HC compression.
 const std = @import("std");
 const lz4 = @import("lz4.zig");
+const lz4f = @import("lz4f.zig");
 const lz4hc = @import("lz4hc.zig");
 const testing = std.testing;
 
@@ -16,14 +17,23 @@ pub fn main() !void {
     try testRandomData(allocator);
     try testAllLevels(allocator);
     try testRoundTrip(allocator);
-
-    // New tests for HC enhancements
     try testLZ4MID(allocator);
     try testPatternDetection(allocator);
     try testHCWithFrameFormat(allocator);
     try testOptimalParser(allocator);
 
     std.debug.print("\n=== All tests passed! ===\n", .{});
+}
+
+fn fillPattern(dst: []u8, pattern: []const u8) void {
+    var i: usize = 0;
+    while (i < dst.len) : (i += pattern.len) {
+        @memcpy(dst[i..][0..pattern.len], pattern);
+    }
+}
+
+fn ratio(original_size: usize, compressed_size: usize) f64 {
+    return @as(f64, @floatFromInt(original_size)) / @as(f64, @floatFromInt(compressed_size));
 }
 
 fn testEmptyInput() !void {
@@ -59,26 +69,20 @@ fn testSmallInput() !void {
 fn testRepeatedPattern(allocator: std.mem.Allocator) !void {
     std.debug.print("Test: Repeated pattern... ", .{});
 
-    // Create a buffer with repeated pattern "ABCD"
     const pattern = "ABCD";
     const repeat_count = 1000;
     const src = try allocator.alloc(u8, pattern.len * repeat_count);
     defer allocator.free(src);
-
-    for (0..repeat_count) |i| {
-        @memcpy(src[i * pattern.len ..][0..pattern.len], pattern);
-    }
+    fillPattern(src, pattern);
 
     const compressed = try allocator.alloc(u8, lz4hc.compressBound(src.len));
     defer allocator.free(compressed);
 
     const compressed_size = try lz4hc.compressHC(src, compressed, 9);
-    const ratio = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size));
 
     try testing.expect(compressed_size > 0);
-    try testing.expect(compressed_size < src.len); // Should compress well
+    try testing.expect(compressed_size < src.len);
 
-    // Decompress and verify
     const decompressed = try allocator.alloc(u8, src.len);
     defer allocator.free(decompressed);
 
@@ -86,7 +90,7 @@ fn testRepeatedPattern(allocator: std.mem.Allocator) !void {
     try testing.expectEqual(src.len, decompressed_size);
     try testing.expectEqualSlices(u8, src, decompressed[0..decompressed_size]);
 
-    std.debug.print("PASS (compressed: {} -> {} bytes, ratio: {d:.2}x)\n", .{ src.len, compressed_size, ratio });
+    std.debug.print("PASS (compressed: {} -> {} bytes, ratio: {d:.2}x)\n", .{ src.len, compressed_size, ratio(src.len, compressed_size) });
 }
 
 fn testTextData(allocator: std.mem.Allocator) !void {
@@ -103,11 +107,9 @@ fn testTextData(allocator: std.mem.Allocator) !void {
     defer allocator.free(compressed);
 
     const compressed_size = try lz4hc.compressHC(text, compressed, 9);
-    const ratio = @as(f64, @floatFromInt(text.len)) / @as(f64, @floatFromInt(compressed_size));
 
     try testing.expect(compressed_size > 0);
 
-    // Decompress and verify
     const decompressed = try allocator.alloc(u8, text.len);
     defer allocator.free(decompressed);
 
@@ -115,7 +117,7 @@ fn testTextData(allocator: std.mem.Allocator) !void {
     try testing.expectEqual(text.len, decompressed_size);
     try testing.expectEqualSlices(u8, text, decompressed[0..decompressed_size]);
 
-    std.debug.print("PASS (compressed: {} -> {} bytes, ratio: {d:.2}x)\n", .{ text.len, compressed_size, ratio });
+    std.debug.print("PASS (compressed: {} -> {} bytes, ratio: {d:.2}x)\n", .{ text.len, compressed_size, ratio(text.len, compressed_size) });
 }
 
 fn testRandomData(allocator: std.mem.Allocator) !void {
@@ -136,10 +138,9 @@ fn testRandomData(allocator: std.mem.Allocator) !void {
     const compressed_size = try lz4hc.compressHC(src, compressed, 9);
 
     try testing.expect(compressed_size > 0);
-    // Random data should not compress well
+    // Random data should not compress well.
     try testing.expect(compressed_size >= src.len);
 
-    // Decompress and verify
     const decompressed = try allocator.alloc(u8, src.len);
     defer allocator.free(decompressed);
 
@@ -157,10 +158,7 @@ fn testAllLevels(allocator: std.mem.Allocator) !void {
     const repeat_count = 500;
     const src = try allocator.alloc(u8, pattern.len * repeat_count);
     defer allocator.free(src);
-
-    for (0..repeat_count) |i| {
-        @memcpy(src[i * pattern.len ..][0..pattern.len], pattern);
-    }
+    fillPattern(src, pattern);
 
     const compressed = try allocator.alloc(u8, lz4hc.compressBound(src.len));
     defer allocator.free(compressed);
@@ -168,11 +166,9 @@ fn testAllLevels(allocator: std.mem.Allocator) !void {
     const decompressed = try allocator.alloc(u8, src.len);
     defer allocator.free(decompressed);
 
-    // Test levels 2-12
     var level: i32 = 2;
     while (level <= 12) : (level += 1) {
         const compressed_size = try lz4hc.compressHC(src, compressed, level);
-        const ratio = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size));
 
         try testing.expect(compressed_size > 0);
 
@@ -180,7 +176,7 @@ fn testAllLevels(allocator: std.mem.Allocator) !void {
         try testing.expectEqual(src.len, decompressed_size);
         try testing.expectEqualSlices(u8, src, decompressed[0..decompressed_size]);
 
-        std.debug.print("  Level {}: {} -> {} bytes (ratio: {d:.2}x)\n", .{ level, src.len, compressed_size, ratio });
+        std.debug.print("  Level {}: {} -> {} bytes (ratio: {d:.2}x)\n", .{ level, src.len, compressed_size, ratio(src.len, compressed_size) });
     }
 
     std.debug.print("PASS\n", .{});
@@ -198,7 +194,7 @@ fn testRoundTrip(allocator: std.mem.Allocator) !void {
         const src = try allocator.alloc(u8, size);
         defer allocator.free(src);
 
-        // Mix of repeated and random data
+        // Mix of repeated and random data.
         const repeated_portion = size / 2;
         @memset(src[0..repeated_portion], 'X');
         random.bytes(src[repeated_portion..]);
@@ -224,35 +220,24 @@ fn testRoundTrip(allocator: std.mem.Allocator) !void {
     std.debug.print("PASS\n", .{});
 }
 
-// Test LZ4MID (level 2) - dual hash table algorithm
 fn testLZ4MID(allocator: std.mem.Allocator) !void {
     std.debug.print("Test: LZ4MID (level 2)... ", .{});
 
-    // Create data that should compress well with MID
     const pattern = "TestData";
     const repeat_count = 250;
     const src = try allocator.alloc(u8, pattern.len * repeat_count);
     defer allocator.free(src);
-
-    for (0..repeat_count) |i| {
-        @memcpy(src[i * pattern.len ..][0..pattern.len], pattern);
-    }
+    fillPattern(src, pattern);
 
     const compressed = try allocator.alloc(u8, lz4hc.compressBound(src.len));
     defer allocator.free(compressed);
 
-    // Compress with level 2 (LZ4MID)
     const compressed_size_l2 = try lz4hc.compressHC(src, compressed, 2);
-    const ratio_l2 = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size_l2));
-
-    // Compress with level 3 (Hash Chain) for comparison
     const compressed_size_l3 = try lz4hc.compressHC(src, compressed, 3);
-    const ratio_l3 = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size_l3));
 
     try testing.expect(compressed_size_l2 > 0);
     try testing.expect(compressed_size_l2 < src.len);
 
-    // Verify decompression works
     const decompressed = try allocator.alloc(u8, src.len);
     defer allocator.free(decompressed);
 
@@ -261,15 +246,13 @@ fn testLZ4MID(allocator: std.mem.Allocator) !void {
     try testing.expectEqualSlices(u8, src, decompressed[0..decompressed_size]);
 
     std.debug.print("PASS\n", .{});
-    std.debug.print("  Level 2 (MID): {} -> {} bytes (ratio: {d:.2}x)\n", .{ src.len, compressed_size_l2, ratio_l2 });
-    std.debug.print("  Level 3 (HC):  {} -> {} bytes (ratio: {d:.2}x)\n", .{ src.len, compressed_size_l3, ratio_l3 });
+    std.debug.print("  Level 2 (MID): {} -> {} bytes (ratio: {d:.2}x)\n", .{ src.len, compressed_size_l2, ratio(src.len, compressed_size_l2) });
+    std.debug.print("  Level 3 (HC):  {} -> {} bytes (ratio: {d:.2}x)\n", .{ src.len, compressed_size_l3, ratio(src.len, compressed_size_l3) });
 }
 
-// Test pattern detection at level 9+
 fn testPatternDetection(allocator: std.mem.Allocator) !void {
     std.debug.print("Test: Pattern detection (level 9+)... ", .{});
 
-    // Create highly repetitive pattern data
     const tests = [_]struct {
         name: []const u8,
         pattern: []const u8,
@@ -283,26 +266,18 @@ fn testPatternDetection(allocator: std.mem.Allocator) !void {
     for (tests) |t| {
         const src = try allocator.alloc(u8, t.pattern.len * t.repeat);
         defer allocator.free(src);
-
-        for (0..t.repeat) |i| {
-            @memcpy(src[i * t.pattern.len ..][0..t.pattern.len], t.pattern);
-        }
+        fillPattern(src, t.pattern);
 
         const compressed = try allocator.alloc(u8, lz4hc.compressBound(src.len));
         defer allocator.free(compressed);
 
-        // Compress with level 9 (with pattern analysis)
+        // Level 9 uses pattern analysis, level 8 does not.
         const compressed_size_l9 = try lz4hc.compressHC(src, compressed, 9);
-        const ratio_l9 = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size_l9));
-
-        // Compress with level 8 (without pattern analysis)
         const compressed_size_l8 = try lz4hc.compressHC(src, compressed, 8);
-        const ratio_l8 = @as(f64, @floatFromInt(src.len)) / @as(f64, @floatFromInt(compressed_size_l8));
 
         try testing.expect(compressed_size_l9 > 0);
         try testing.expect(compressed_size_l9 < src.len);
 
-        // Verify decompression
         const decompressed = try allocator.alloc(u8, src.len);
         defer allocator.free(decompressed);
 
@@ -313,20 +288,17 @@ fn testPatternDetection(allocator: std.mem.Allocator) !void {
         std.debug.print("\n  {s} pattern: L8={} bytes ({d:.1}x), L9={} bytes ({d:.1}x)", .{
             t.name,
             compressed_size_l8,
-            ratio_l8,
+            ratio(src.len, compressed_size_l8),
             compressed_size_l9,
-            ratio_l9,
+            ratio(src.len, compressed_size_l9),
         });
     }
 
     std.debug.print("\nPASS\n", .{});
 }
 
-// Test HC compression with LZ4F frame format
 fn testHCWithFrameFormat(allocator: std.mem.Allocator) !void {
     std.debug.print("Test: HC with LZ4F frame format... ", .{});
-
-    const lz4f = @import("lz4f.zig");
 
     const text =
         \\The quick brown fox jumps over the lazy dog.
@@ -335,7 +307,6 @@ fn testHCWithFrameFormat(allocator: std.mem.Allocator) !void {
         \\Repeated text should compress well with HC.
     ;
 
-    // Test different compression levels
     const levels = [_]i32{ 0, 2, 9 };
 
     for (levels) |level| {
@@ -351,12 +322,10 @@ fn testHCWithFrameFormat(allocator: std.mem.Allocator) !void {
         defer allocator.free(compressed);
 
         const compressed_size = try lz4f.compressFrame(allocator, text, compressed, prefs);
-        const ratio = @as(f64, @floatFromInt(text.len)) / @as(f64, @floatFromInt(compressed_size));
 
         try testing.expect(compressed_size > 0);
-        try testing.expect(compressed_size < text.len + 100); // Should compress well
+        try testing.expect(compressed_size < text.len + 100);
 
-        // Decompress and verify
         const decompressed = try allocator.alloc(u8, text.len * 2);
         defer allocator.free(decompressed);
 
@@ -364,7 +333,7 @@ fn testHCWithFrameFormat(allocator: std.mem.Allocator) !void {
         try testing.expectEqual(text.len, decompressed_size);
         try testing.expectEqualSlices(u8, text, decompressed[0..decompressed_size]);
 
-        std.debug.print("\n  Level {}: {} -> {} bytes (ratio: {d:.2}x)", .{ level, text.len, compressed_size, ratio });
+        std.debug.print("\n  Level {}: {} -> {} bytes (ratio: {d:.2}x)", .{ level, text.len, compressed_size, ratio(text.len, compressed_size) });
     }
 
     std.debug.print("\nPASS\n", .{});
@@ -373,30 +342,20 @@ fn testHCWithFrameFormat(allocator: std.mem.Allocator) !void {
 fn testOptimalParser(allocator: std.mem.Allocator) !void {
     std.debug.print("Test: Optimal parser (levels 10-12)... ", .{});
 
-    // Create data with overlapping matches - optimal parser should find better sequences
-    var data = try allocator.alloc(u8, 500);
+    // Data with overlapping matches: "ABCDABCDABCDXYZXYZXYZPQRPQRPQR..."
+    const data = try allocator.alloc(u8, 500);
     defer allocator.free(data);
 
-    // Create a pattern with multiple match opportunities
-    // "ABCDABCDABCDXYZXYZXYZPQRPQRPQR..."
     var pos: usize = 0;
     while (pos < data.len) {
         const patterns = [_][]const u8{ "ABCD", "XYZ", "PQR", "123", "abc" };
         for (patterns) |pattern| {
-            for (pattern) |byte| {
-                if (pos >= data.len) break;
-                data[pos] = byte;
-                pos += 1;
-            }
-            for (pattern) |byte| {
-                if (pos >= data.len) break;
-                data[pos] = byte;
-                pos += 1;
-            }
-            for (pattern) |byte| {
-                if (pos >= data.len) break;
-                data[pos] = byte;
-                pos += 1;
+            for (0..3) |_| {
+                for (pattern) |byte| {
+                    if (pos >= data.len) break;
+                    data[pos] = byte;
+                    pos += 1;
+                }
             }
         }
     }
@@ -410,20 +369,16 @@ fn testOptimalParser(allocator: std.mem.Allocator) !void {
     const compressed12 = try allocator.alloc(u8, lz4hc.compressBound(data.len));
     defer allocator.free(compressed12);
 
-    // Compress with level 9 (hash chain) as baseline
     const size9 = try lz4hc.compressHC(data, compressed9, 9);
-
-    // Compress with levels 10-12 (optimal parser)
     const size10 = try lz4hc.compressHC(data, compressed10, 10);
     const size11 = try lz4hc.compressHC(data, compressed11, 11);
     const size12 = try lz4hc.compressHC(data, compressed12, 12);
 
-    // Optimal parser should achieve same or better compression
+    // The optimal parser should achieve same or better compression than hash chain.
     try testing.expect(size10 <= size9);
     try testing.expect(size11 <= size10);
     try testing.expect(size12 <= size11);
 
-    // Test round-trip decompression for all levels
     const decompressed = try allocator.alloc(u8, data.len);
     defer allocator.free(decompressed);
 
@@ -439,17 +394,11 @@ fn testOptimalParser(allocator: std.mem.Allocator) !void {
     try testing.expectEqual(data.len, decompressed_size12);
     try testing.expectEqualSlices(u8, data, decompressed[0..decompressed_size12]);
 
-    const ratio9 = @as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(size9));
-    const ratio10 = @as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(size10));
-    const ratio11 = @as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(size11));
-    const ratio12 = @as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(size12));
+    std.debug.print("\n  Level 9 (HC):   {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size9, ratio(data.len, size9) });
+    std.debug.print("\n  Level 10 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size10, ratio(data.len, size10) });
+    std.debug.print("\n  Level 11 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size11, ratio(data.len, size11) });
+    std.debug.print("\n  Level 12 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size12, ratio(data.len, size12) });
 
-    std.debug.print("\n  Level 9 (HC):   {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size9, ratio9 });
-    std.debug.print("\n  Level 10 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size10, ratio10 });
-    std.debug.print("\n  Level 11 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size11, ratio11 });
-    std.debug.print("\n  Level 12 (OPT): {} -> {} bytes (ratio: {d:.2}x)", .{ data.len, size12, ratio12 });
-
-    // Test with complex text data
     const complex_text = "The quick brown fox jumps over the lazy dog. " ++
         "The quick brown fox jumps over the lazy dog. " ++
         "Pack my box with five dozen liquor jugs. " ++
@@ -465,7 +414,6 @@ fn testOptimalParser(allocator: std.mem.Allocator) !void {
     const text_size9 = try lz4hc.compressHC(complex_text, text_compressed9, 9);
     const text_size12 = try lz4hc.compressHC(complex_text, text_compressed12, 12);
 
-    // Verify decompression
     const text_decompressed = try allocator.alloc(u8, complex_text.len);
     defer allocator.free(text_decompressed);
 
@@ -473,11 +421,8 @@ fn testOptimalParser(allocator: std.mem.Allocator) !void {
     try testing.expectEqual(complex_text.len, text_decompressed_size);
     try testing.expectEqualSlices(u8, complex_text, text_decompressed[0..text_decompressed_size]);
 
-    const text_ratio9 = @as(f64, @floatFromInt(complex_text.len)) / @as(f64, @floatFromInt(text_size9));
-    const text_ratio12 = @as(f64, @floatFromInt(complex_text.len)) / @as(f64, @floatFromInt(text_size12));
-
-    std.debug.print("\n  Text L9:  {} -> {} bytes (ratio: {d:.2}x)", .{ complex_text.len, text_size9, text_ratio9 });
-    std.debug.print("\n  Text L12: {} -> {} bytes (ratio: {d:.2}x)", .{ complex_text.len, text_size12, text_ratio12 });
+    std.debug.print("\n  Text L9:  {} -> {} bytes (ratio: {d:.2}x)", .{ complex_text.len, text_size9, ratio(complex_text.len, text_size9) });
+    std.debug.print("\n  Text L12: {} -> {} bytes (ratio: {d:.2}x)", .{ complex_text.len, text_size12, ratio(complex_text.len, text_size12) });
 
     std.debug.print("\nPASS\n", .{});
 }
