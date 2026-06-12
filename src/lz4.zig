@@ -1,13 +1,25 @@
-// LZ4 - Fast LZ compression algorithm
-// Zig implementation
-// Based on the C reference implementation by Yann Collet
+//! LZ4 block format: fast LZ compression algorithm.
+//! Based on the C reference implementation by Yann Collet.
 
 const std = @import("std");
 const mem = std.mem;
-const math = std.math;
 const Allocator = std.mem.Allocator;
 
-// ===== Constants =====
+pub const VERSION_MAJOR = 1;
+pub const VERSION_MINOR = 10;
+pub const VERSION_RELEASE = 0;
+pub const VERSION_NUMBER = VERSION_MAJOR * 100 * 100 + VERSION_MINOR * 100 + VERSION_RELEASE;
+pub const VERSION_STRING = std.fmt.comptimePrint("{d}.{d}.{d}", .{
+    VERSION_MAJOR, VERSION_MINOR, VERSION_RELEASE,
+});
+
+pub fn versionNumber() u32 {
+    return VERSION_NUMBER;
+}
+
+pub fn versionString() []const u8 {
+    return VERSION_STRING;
+}
 
 pub const MINMATCH = 4;
 pub const WILDCOPYLENGTH = 8;
@@ -16,18 +28,18 @@ pub const MFLIMIT = 12;
 pub const MATCH_SAFEGUARD_DISTANCE = (2 * WILDCOPYLENGTH) - MINMATCH;
 
 pub const ML_BITS = 4;
-pub const ML_MASK = (1 << ML_BITS) - 1; // 15
+pub const ML_MASK = (1 << ML_BITS) - 1;
 pub const RUN_BITS = 8 - ML_BITS;
-pub const RUN_MASK = (1 << RUN_BITS) - 1; // 15
+pub const RUN_MASK = (1 << RUN_BITS) - 1;
 
-pub const LZ4_MAX_INPUT_SIZE = 0x7E000000; // 2,113,929,216 bytes
+pub const LZ4_MAX_INPUT_SIZE = 0x7E000000;
 pub const LZ4_DISTANCE_ABSOLUTE_MAX = 65535;
 pub const LZ4_DISTANCE_MAX = 65535;
 
 pub const LZ4_MEMORY_USAGE_MIN = 10;
 pub const LZ4_MEMORY_USAGE_DEFAULT = 14;
 pub const LZ4_MEMORY_USAGE_MAX = 20;
-pub const LZ4_MEMORY_USAGE = 14; // 2^14 = 16KB hash table
+pub const LZ4_MEMORY_USAGE = 14;
 pub const LZ4_HASHLOG = LZ4_MEMORY_USAGE - 2;
 pub const LZ4_HASHTABLESIZE = 1 << LZ4_MEMORY_USAGE;
 pub const LZ4_HASH_SIZE_U32 = 1 << (LZ4_MEMORY_USAGE - 2);
@@ -35,15 +47,13 @@ pub const LZ4_HASH_SIZE_U32 = 1 << (LZ4_MEMORY_USAGE - 2);
 pub const ACCELERATION_DEFAULT = 1;
 pub const ACCELERATION_MAX = 65537;
 
-pub const HASH_UNIT = 4; // bytes to hash
+pub const HASH_UNIT = 4;
 
 pub const LZ4_STREAM_MINSIZE = (1 << LZ4_MEMORY_USAGE) + 32;
 pub const LZ4_STREAMDECODE_MINSIZE = 32;
 
-// Golden ratio constant for hashing
-const HASH_MULTIPLIER: u32 = 2654435761;
-
-// ===== Error types =====
+/// Golden ratio constant used by the match-finder hash.
+const hash_multiplier: u32 = 2654435761;
 
 pub const Error = error{
     OutputTooSmall,
@@ -54,211 +64,155 @@ pub const Error = error{
     AllocationFailed,
 };
 
-// ===== Helper functions =====
-
-/// Read a little-endian u16 from a byte slice
-inline fn readU16LE(ptr: [*]const u8) u16 {
-    return std.mem.readInt(u16, ptr[0..2], .little);
-}
-
-/// Read a little-endian u32 from a byte slice
-inline fn readU32LE(ptr: [*]const u8) u32 {
-    return std.mem.readInt(u32, ptr[0..4], .little);
-}
-
-/// Write a little-endian u16 to a byte slice
-inline fn writeU16LE(ptr: [*]u8, value: u16) void {
-    std.mem.writeInt(u16, ptr[0..2], value, .little);
-}
-
-/// Compute hash of 4-byte sequence
 inline fn hash4(sequence: u32) u32 {
-    return (sequence *% HASH_MULTIPLIER) >> ((MINMATCH * 8) - LZ4_HASHLOG);
+    return (sequence *% hash_multiplier) >> ((MINMATCH * 8) - LZ4_HASHLOG);
 }
 
-/// Calculate the maximum compressed size for a given input size
-pub fn compressBound(inputSize: usize) usize {
-    if (inputSize > LZ4_MAX_INPUT_SIZE) return 0;
-    return inputSize + (inputSize / 255) + 16;
+inline fn readU32(bytes: []const u8) u32 {
+    return mem.readInt(u32, bytes[0..4], .little);
 }
 
-// ===== Decompression =====
+/// Maximum compressed size in the worst case, or 0 if the input is too large.
+pub fn compressBound(input_size: usize) usize {
+    if (input_size > LZ4_MAX_INPUT_SIZE) return 0;
+    return input_size + (input_size / 255) + 16;
+}
 
-/// Generic decompression function supporting dictionaries and partial decompression
-/// This is the core decompression engine used by all public decompression functions
+/// Core decompression engine used by all public decompression functions.
+/// `target_output_size` enables partial decompression; pass `dst.len` for full.
+/// When `partial` is set, decoding stops once `target_output_size` bytes have
+/// been produced, even in the middle of a sequence.
+/// `low_prefix_ptr` points to the prefix start when streaming; null otherwise.
+/// `dict` is an optional external dictionary.
 fn decompressGeneric(
     src: []const u8,
     dst: []u8,
-    targetOutputSize: usize, // For partial decompression; use dst.len for full
-    lowPrefixPtr: ?[*]const u8, // Points to prefix start (for streaming); null for standalone
-    dictStart: ?[]const u8, // External dictionary; null if no dictionary
+    target_output_size: usize,
+    partial: bool,
+    low_prefix_ptr: ?[*]const u8,
+    dict: ?[]const u8,
 ) Error!usize {
-    // Empty input is valid - decompress to empty output
     if (src.len == 0) return 0;
     if (dst.len == 0) return 0;
-    if (targetOutputSize > dst.len) return error.OutputTooSmall;
+    if (target_output_size > dst.len) return error.OutputTooSmall;
 
-    const dstPtr = dst.ptr;
-    const lowPrefix = lowPrefixPtr orelse dstPtr;
-    const dictEnd: ?[*]const u8 = if (dictStart) |dict| dict.ptr + dict.len else null;
-    const dictSize: usize = if (dictStart) |dict| dict.len else 0;
+    const low_prefix = low_prefix_ptr orelse dst.ptr;
+    const dict_end: ?[*]const u8 = if (dict) |d| d.ptr + d.len else null;
+    const dict_size: usize = if (dict) |d| d.len else 0;
 
-    var ip: usize = 0; // input position
-    var op: usize = 0; // output position
+    var ip: usize = 0;
+    var op: usize = 0;
     const iend = src.len;
-    const oend = targetOutputSize;
+    const oend = target_output_size;
 
-    while (true) {
-        // Check if we have room for at least a token
-        if (ip >= iend) break;
-
-        // Read token
+    while (ip < iend) {
         const token = src[ip];
         ip += 1;
 
-        // Decode literal length
-        var literalLength: usize = token >> ML_BITS;
-
-        // If literal length == 15, read additional bytes
-        if (literalLength == RUN_MASK) {
+        var literal_len: usize = token >> ML_BITS;
+        if (literal_len == RUN_MASK) {
             while (true) {
                 if (ip >= iend) return error.CorruptedData;
                 const s = src[ip];
                 ip += 1;
-                literalLength += s;
+                literal_len += s;
                 if (s != 255) break;
             }
         }
 
-        // Copy literals
-        if (literalLength > 0) {
-            // Check bounds
-            if (ip + literalLength > iend) return error.CorruptedData;
-            if (op + literalLength > oend) return error.OutputTooSmall;
-
-            // Copy literal bytes
-            @memcpy(dst[op..][0..literalLength], src[ip..][0..literalLength]);
-            ip += literalLength;
-            op += literalLength;
+        if (literal_len > 0) {
+            if (partial and op + literal_len > oend) {
+                const copy_len = oend - op;
+                if (ip + copy_len > iend) return error.CorruptedData;
+                @memcpy(dst[op..][0..copy_len], src[ip..][0..copy_len]);
+                return oend;
+            }
+            if (ip + literal_len > iend) return error.CorruptedData;
+            if (op + literal_len > oend) return error.OutputTooSmall;
+            @memcpy(dst[op..][0..literal_len], src[ip..][0..literal_len]);
+            ip += literal_len;
+            op += literal_len;
         }
 
-        // Check if we're done (last sequence may have no match)
+        // The last sequence carries no match.
         if (ip >= iend) break;
 
-        // Read offset (2 bytes, little-endian)
         if (ip + 2 > iend) return error.CorruptedData;
-        const offset = readU16LE(src[ip..].ptr);
+        const offset = mem.readInt(u16, src[ip..][0..2], .little);
         ip += 2;
-
-        // Offset must be > 0
         if (offset == 0) return error.CorruptedData;
 
-        // Decode match length
-        var matchLength: usize = token & ML_MASK;
-
-        // If match length == 15, read additional bytes
-        if (matchLength == ML_MASK) {
+        var match_len: usize = token & ML_MASK;
+        if (match_len == ML_MASK) {
             while (true) {
                 if (ip >= iend) return error.CorruptedData;
                 const s = src[ip];
                 ip += 1;
-                matchLength += s;
+                match_len += s;
                 if (s != 255) break;
             }
         }
+        match_len += MINMATCH;
 
-        // Actual match length includes MINMATCH
-        matchLength += MINMATCH;
+        var finished = false;
+        if (op + match_len > oend) {
+            if (!partial) return error.OutputTooSmall;
+            match_len = oend - op;
+            finished = true;
+        }
 
-        // Check output bounds
-        if (op + matchLength > oend) return error.OutputTooSmall;
+        const match_ptr = dst.ptr + op - offset;
+        if (@intFromPtr(match_ptr) < @intFromPtr(low_prefix)) {
+            // Match starts in the external dictionary.
+            if (dict_end == null) return error.CorruptedData;
 
-        // Calculate match position
-        const currentPtr = dstPtr + op;
-        const matchPtr = currentPtr - offset;
+            const prefix_offset = @intFromPtr(dst.ptr + op) - @intFromPtr(low_prefix);
+            if (offset > prefix_offset + dict_size) return error.CorruptedData;
 
-        // Check if match references external dictionary
-        if (@intFromPtr(matchPtr) < @intFromPtr(lowPrefix)) {
-            // Match starts in external dictionary
-            if (dictEnd == null) {
-                // No dictionary available but match requires it
-                return error.CorruptedData;
-            }
+            const low_prefix_offset = @intFromPtr(low_prefix) - @intFromPtr(match_ptr);
+            const dict_match_ptr = dict_end.? - low_prefix_offset;
 
-            // Validate offset doesn't go beyond dictionary
-            const prefixOffset = @intFromPtr(currentPtr) - @intFromPtr(lowPrefix);
-            if (offset > prefixOffset + dictSize) {
-                return error.CorruptedData;
-            }
-
-            // Calculate how far back into dictionary we need to go
-            const lowPrefixOffset = @intFromPtr(lowPrefix) - @intFromPtr(matchPtr);
-            const dictMatchPtr = dictEnd.? - lowPrefixOffset;
-
-            // Check if match fits entirely within external dictionary
-            if (matchLength <= lowPrefixOffset) {
-                // Match entirely in dictionary - just copy
-                @memcpy(dst[op..][0..matchLength], dictMatchPtr[0..matchLength]);
-                op += matchLength;
+            if (match_len <= low_prefix_offset) {
+                @memcpy(dst[op..][0..match_len], dict_match_ptr[0..match_len]);
+                op += match_len;
             } else {
-                // Match spans both external dictionary and current block
-                const copySize = lowPrefixOffset;
-                const restSize = matchLength - copySize;
+                // Match spans the dictionary and the current block.
+                const copy_size = low_prefix_offset;
+                const rest_size = match_len - copy_size;
 
-                // Copy dictionary part
-                @memcpy(dst[op..][0..copySize], dictMatchPtr[0..copySize]);
-                op += copySize;
+                @memcpy(dst[op..][0..copy_size], dict_match_ptr[0..copy_size]);
+                op += copy_size;
 
-                // Copy rest from current block (starting at lowPrefix)
-                const restStart = @intFromPtr(lowPrefix) - @intFromPtr(dstPtr);
-
-                // Check for overlap (RLE pattern)
-                if (restSize > op - restStart) {
-                    // Overlapping copy - byte by byte
-                    var i: usize = 0;
-                    while (i < restSize) : (i += 1) {
-                        dst[op + i] = dst[restStart + i];
-                    }
-                    op += restSize;
+                const rest_start = @intFromPtr(low_prefix) - @intFromPtr(dst.ptr);
+                if (rest_size > op - rest_start) {
+                    mem.copyForwards(u8, dst[op..][0..rest_size], dst[rest_start..][0..rest_size]);
                 } else {
-                    // Non-overlapping
-                    @memcpy(dst[op..][0..restSize], dst[restStart..][0..restSize]);
-                    op += restSize;
+                    @memcpy(dst[op..][0..rest_size], dst[rest_start..][0..rest_size]);
                 }
+                op += rest_size;
             }
         } else {
-            // Match within current block
             if (offset > op) return error.CorruptedData;
-            const matchPos = op - offset;
-
-            // Handle overlapping copies (RLE-style)
-            if (offset < matchLength) {
-                // Overlapping copy - must be done byte by byte
-                var i: usize = 0;
-                while (i < matchLength) : (i += 1) {
-                    dst[op + i] = dst[matchPos + i];
-                }
-                op += matchLength;
+            const match_pos = op - offset;
+            if (offset < match_len) {
+                mem.copyForwards(u8, dst[op..][0..match_len], dst[match_pos..][0..match_len]);
             } else {
-                // Non-overlapping - can use memcpy
-                @memcpy(dst[op..][0..matchLength], dst[matchPos..][0..matchLength]);
-                op += matchLength;
+                @memcpy(dst[op..][0..match_len], dst[match_pos..][0..match_len]);
             }
+            op += match_len;
         }
+
+        if (finished) return oend;
     }
 
     return op;
 }
 
-/// Decompress LZ4 data safely with bounds checking
-/// src: compressed data
-/// dst: destination buffer (must be pre-allocated)
-/// Returns: number of bytes written to dst, or error
+/// Decompress LZ4 block data into a pre-allocated buffer, with bounds checking.
+/// Returns the number of bytes written to `dst`.
 pub fn decompressSafe(src: []const u8, dst: []u8) Error!usize {
-    return decompressGeneric(src, dst, dst.len, null, null);
+    return decompressGeneric(src, dst, dst.len, false, null, null);
 }
-
-// ===== Compression =====
 
 pub const HashTable = struct {
     table: [LZ4_HASH_SIZE_U32]u32,
@@ -276,470 +230,244 @@ pub const HashTable = struct {
     }
 };
 
-/// Compress data using LZ4 with default settings (acceleration = 1)
-/// src: source data to compress
-/// dst: destination buffer (must be at least compressBound(src.len) bytes)
-/// Returns: number of bytes written to dst, or error
+/// Compress with default settings (acceleration = 1).
+/// `dst` must be at least `compressBound(src.len)` bytes for guaranteed success.
+/// Returns the number of bytes written to `dst`.
 pub fn compressDefault(src: []const u8, dst: []u8) Error!usize {
     return compressFast(src, dst, ACCELERATION_DEFAULT);
 }
 
-/// Compress data using LZ4 with specified acceleration
-/// src: source data to compress
-/// dst: destination buffer (must be at least compressBound(src.len) bytes)
-/// acceleration: speed vs compression ratio (higher = faster, less compression)
-/// Returns: number of bytes written to dst, or error
+/// Compress with the given acceleration (higher = faster, less compression).
+/// `dst` must be at least `compressBound(src.len)` bytes for guaranteed success.
+/// Returns the number of bytes written to `dst`.
 pub fn compressFast(src: []const u8, dst: []u8, acceleration: u32) Error!usize {
-    const srcSize = src.len;
+    if (src.len > LZ4_MAX_INPUT_SIZE) return error.InputTooLarge;
+    if (src.len == 0) return 0;
+    if (src.len < MFLIMIT + 1) return emitLastLiterals(src, dst, 0, 0);
 
-    // Check input size
-    if (srcSize > LZ4_MAX_INPUT_SIZE) return error.InputTooLarge;
+    var hash_table = HashTable.init();
+    return compressFastWithHashTable(src, dst, acceleration, &hash_table);
+}
 
-    // Empty input
-    if (srcSize == 0) return 0;
+/// Write the extension bytes of a length >= RUN_MASK/ML_MASK (a run of 255s
+/// followed by the remainder). Returns the new output position.
+fn putExtendedLength(dst: []u8, pos: usize, length: usize) Error!usize {
+    var op = pos;
+    var len = length;
+    while (len >= 255) {
+        if (op >= dst.len) return error.OutputTooSmall;
+        dst[op] = 255;
+        op += 1;
+        len -= 255;
+    }
+    if (op >= dst.len) return error.OutputTooSmall;
+    dst[op] = @intCast(len);
+    return op + 1;
+}
 
-    // Input too small - just store as literals
-    if (srcSize < MFLIMIT + 1) {
-        return compressAsLiterals(src, dst);
+/// Encode `src[anchor..]` as a final literal-only sequence starting at `op`.
+/// Returns the total compressed size.
+fn emitLastLiterals(src: []const u8, dst: []u8, anchor: usize, op: usize) Error!usize {
+    const literal_len = src.len - anchor;
+    var out_pos = op;
+
+    if (literal_len == 0) return out_pos;
+
+    if (out_pos >= dst.len) return error.OutputTooSmall;
+    if (literal_len >= RUN_MASK) {
+        dst[out_pos] = RUN_MASK << ML_BITS;
+        out_pos = try putExtendedLength(dst, out_pos + 1, literal_len - RUN_MASK);
+    } else {
+        dst[out_pos] = @as(u8, @intCast(literal_len)) << ML_BITS;
+        out_pos += 1;
     }
 
-    // Initialize hash table
-    var hashTable = HashTable.init();
+    if (out_pos + literal_len > dst.len) return error.OutputTooSmall;
+    @memcpy(dst[out_pos..][0..literal_len], src[anchor..][0..literal_len]);
+    return out_pos + literal_len;
+}
 
+fn compressFastWithHashTable(src: []const u8, dst: []u8, acceleration: u32, hash_table: *HashTable) Error!usize {
     var ip: usize = 0;
     var op: usize = 0;
-    var anchor: usize = 0; // Start of current literal run
+    var anchor: usize = 0;
 
-    const mflimitPlusOne = srcSize - MFLIMIT;
-    const matchLimit = srcSize - LASTLITERALS;
+    const mflimit_plus_one = src.len - MFLIMIT;
+    const match_limit = src.len - LASTLITERALS;
+    const accel = std.math.clamp(acceleration, 1, ACCELERATION_MAX);
 
-    // First byte
     ip += 1;
 
-    // Main compression loop
-    while (ip < mflimitPlusOne) {
-        const accel = std.math.clamp(acceleration, 1, ACCELERATION_MAX);
+    while (ip < mflimit_plus_one) {
         var step: usize = accel;
-        var searchMatchNb: usize = accel;
+        var search_match_nb: usize = accel;
 
-        // Find a match
         var match: usize = undefined;
-        var forwardIp = ip;
+        var forward_ip = ip;
 
         while (true) {
-            ip = forwardIp;
-            forwardIp += step;
-            step = searchMatchNb >> 6; // Adaptive step
-            searchMatchNb += 1;
+            ip = forward_ip;
+            forward_ip += step;
+            step = search_match_nb >> 6;
+            search_match_nb += 1;
 
-            if (forwardIp > mflimitPlusOne) {
-                // No more matches possible - encode remaining as literals
-                return finishCompression(src, dst, anchor, op);
+            if (forward_ip > mflimit_plus_one) {
+                return emitLastLiterals(src, dst, anchor, op);
             }
 
-            // Hash current position
-            const h = hash4(readU32LE(src[ip..].ptr));
-            match = hashTable.get(h);
+            const h = hash4(readU32(src[ip..]));
+            match = hash_table.get(h);
 
-            // CRITICAL: Must check BEFORE putting, to avoid matching ourselves
+            // Validate before inserting the current position, to avoid
+            // matching ourselves.
             const is_valid_match = match > 0 and
-                match < ip and // FIXED: was >= should be <
+                match < ip and
                 match + LZ4_DISTANCE_ABSOLUTE_MAX >= ip and
-                readU32LE(src[match..].ptr) == readU32LE(src[ip..].ptr);
+                readU32(src[match..]) == readU32(src[ip..]);
 
-            hashTable.put(h, @intCast(ip));
+            hash_table.put(h, @intCast(ip));
 
-            if (is_valid_match) {
-                break;
-            }
+            if (is_valid_match) break;
         }
 
-        // Found a match - encode literal run + match
-
-        // Calculate literal length
-        const literalLength = ip - anchor;
-
-        // Write token position (we'll fill it in after we know match length)
-        const tokenPos = op;
+        const literal_len = ip - anchor;
+        const token_pos = op;
         op += 1;
         if (op >= dst.len) return error.OutputTooSmall;
 
-        // Write literals
-        if (literalLength >= RUN_MASK) {
-            // Extended literal length
-            dst[tokenPos] = RUN_MASK << ML_BITS;
-            var len = literalLength - RUN_MASK;
-
-            while (len >= 255) {
-                if (op >= dst.len) return error.OutputTooSmall;
-                dst[op] = 255;
-                op += 1;
-                len -= 255;
-            }
-
-            if (op >= dst.len) return error.OutputTooSmall;
-            dst[op] = @intCast(len);
-            op += 1;
+        if (literal_len >= RUN_MASK) {
+            dst[token_pos] = RUN_MASK << ML_BITS;
+            op = try putExtendedLength(dst, op, literal_len - RUN_MASK);
         } else {
-            dst[tokenPos] = @as(u8, @intCast(literalLength)) << ML_BITS;
+            dst[token_pos] = @as(u8, @intCast(literal_len)) << ML_BITS;
         }
 
-        // Copy literal bytes
-        if (op + literalLength > dst.len) return error.OutputTooSmall;
-        if (literalLength > 0) {
-            @memcpy(dst[op..][0..literalLength], src[anchor..][0..literalLength]);
-            op += literalLength;
+        if (op + literal_len > dst.len) return error.OutputTooSmall;
+        if (literal_len > 0) {
+            @memcpy(dst[op..][0..literal_len], src[anchor..][0..literal_len]);
+            op += literal_len;
         }
 
-        // Write offset
         const offset: u16 = @intCast(ip - match);
         if (op + 2 > dst.len) return error.OutputTooSmall;
-        writeU16LE(dst[op..].ptr, offset);
+        mem.writeInt(u16, dst[op..][0..2], offset, .little);
         op += 2;
 
-        // Find match length
         ip += MINMATCH;
         match += MINMATCH;
-        var matchLength: usize = 0;
-
-        while (ip < matchLimit) {
-            if (src[ip] == src[match]) {
-                ip += 1;
-                match += 1;
-                matchLength += 1;
-            } else {
-                break;
-            }
+        var match_len: usize = 0;
+        while (ip < match_limit and src[ip] == src[match]) {
+            ip += 1;
+            match += 1;
+            match_len += 1;
         }
 
-        // Write match length to token
-        if (matchLength >= ML_MASK) {
-            dst[tokenPos] |= ML_MASK;
-            var len = matchLength - ML_MASK;
-
-            while (len >= 255) {
-                if (op >= dst.len) return error.OutputTooSmall;
-                dst[op] = 255;
-                op += 1;
-                len -= 255;
-            }
-
-            if (op >= dst.len) return error.OutputTooSmall;
-            dst[op] = @intCast(len);
-            op += 1;
+        if (match_len >= ML_MASK) {
+            dst[token_pos] |= ML_MASK;
+            op = try putExtendedLength(dst, op, match_len - ML_MASK);
         } else {
-            dst[tokenPos] |= @intCast(matchLength);
+            dst[token_pos] |= @intCast(match_len);
         }
 
-        // Update anchor
         anchor = ip;
 
-        // Hash next position
-        if (ip < mflimitPlusOne) {
-            const h = hash4(readU32LE(src[ip..].ptr));
-            hashTable.put(h, @intCast(ip));
+        if (ip < mflimit_plus_one) {
+            const h = hash4(readU32(src[ip..]));
+            hash_table.put(h, @intCast(ip));
             ip += 1;
         }
     }
 
-    // Encode remaining literals
-    return finishCompression(src, dst, anchor, op);
+    return emitLastLiterals(src, dst, anchor, op);
 }
 
-fn compressAsLiterals(src: []const u8, dst: []u8) Error!usize {
-    const literalLength = src.len;
-    var op: usize = 0;
-
-    // Token
-    if (dst.len < 1) return error.OutputTooSmall;
-
-    if (literalLength >= RUN_MASK) {
-        dst[op] = RUN_MASK << ML_BITS;
-        op += 1;
-        var len = literalLength - RUN_MASK;
-
-        while (len >= 255) {
-            if (op >= dst.len) return error.OutputTooSmall;
-            dst[op] = 255;
-            op += 1;
-            len -= 255;
-        }
-
-        if (op >= dst.len) return error.OutputTooSmall;
-        dst[op] = @intCast(len);
-        op += 1;
-    } else {
-        dst[op] = @as(u8, @intCast(literalLength)) << ML_BITS;
-        op += 1;
-    }
-
-    // Copy literals
-    if (op + literalLength > dst.len) return error.OutputTooSmall;
-    @memcpy(dst[op..][0..literalLength], src);
-    op += literalLength;
-
-    return op;
-}
-
-fn finishCompression(src: []const u8, dst: []u8, anchor: usize, op: usize) Error!usize {
-    const literalLength = src.len - anchor;
-    var outPos = op;
-
-    if (literalLength == 0) return outPos;
-
-    // Token
-    if (outPos >= dst.len) return error.OutputTooSmall;
-
-    if (literalLength >= RUN_MASK) {
-        dst[outPos] = RUN_MASK << ML_BITS;
-        outPos += 1;
-        var len = literalLength - RUN_MASK;
-
-        while (len >= 255) {
-            if (outPos >= dst.len) return error.OutputTooSmall;
-            dst[outPos] = 255;
-            outPos += 1;
-            len -= 255;
-        }
-
-        if (outPos >= dst.len) return error.OutputTooSmall;
-        dst[outPos] = @intCast(len);
-        outPos += 1;
-    } else {
-        dst[outPos] = @as(u8, @intCast(literalLength)) << ML_BITS;
-        outPos += 1;
-    }
-
-    // Copy literals
-    if (outPos + literalLength > dst.len) return error.OutputTooSmall;
-    @memcpy(dst[outPos..][0..literalLength], src[anchor..][0..literalLength]);
-    outPos += literalLength;
-
-    return outPos;
-}
-
-// ===== Advanced Block Functions =====
-
-/// Get size needed for compression state buffer
+/// Size needed for an external compression state buffer.
 pub fn sizeofState() usize {
     return @sizeOf(HashTable);
 }
 
-/// Compress with external state buffer (avoids internal allocation)
-/// state: pre-allocated buffer of at least sizeofState() bytes
-/// Returns: compressed size or error
+/// Compress using a caller-provided state buffer of at least `sizeofState()`
+/// bytes, avoiding internal allocation.
 pub fn compressFastExtState(state: []align(@alignOf(HashTable)) u8, src: []const u8, dst: []u8, acceleration: u32) Error!usize {
     if (state.len < sizeofState()) return error.InvalidState;
 
-    const srcSize = src.len;
-    if (srcSize > LZ4_MAX_INPUT_SIZE) return error.InputTooLarge;
-    if (srcSize == 0) return 0;
-    if (srcSize < MFLIMIT + 1) {
-        return compressAsLiterals(src, dst);
-    }
+    if (src.len > LZ4_MAX_INPUT_SIZE) return error.InputTooLarge;
+    if (src.len == 0) return 0;
+    if (src.len < MFLIMIT + 1) return emitLastLiterals(src, dst, 0, 0);
 
-    // Cast state buffer to HashTable
-    const hashTable: *HashTable = @ptrCast(@alignCast(state.ptr));
-    hashTable.* = HashTable.init();
+    const hash_table: *HashTable = @ptrCast(@alignCast(state.ptr));
+    hash_table.* = HashTable.init();
 
-    return compressFastWithHashTable(src, dst, acceleration, hashTable);
+    return compressFastWithHashTable(src, dst, acceleration, hash_table);
 }
 
-/// Compress to fit target destination size
-/// srcSizePtr: in/out parameter - input size on entry, consumed bytes on return
-/// Returns: compressed size or error
-pub fn compressDestSize(src: []const u8, dst: []u8, srcSizePtr: *usize) Error!usize {
-    const maxSrcSize = srcSizePtr.*;
-    if (maxSrcSize == 0) {
-        srcSizePtr.* = 0;
+/// Compress as much of `src` as fits into `dst`.
+/// `src_size_ptr` holds the input size on entry and the consumed bytes on return.
+/// Returns the compressed size.
+pub fn compressDestSize(src: []const u8, dst: []u8, src_size_ptr: *usize) Error!usize {
+    const max_src_size = src_size_ptr.*;
+    if (max_src_size == 0) {
+        src_size_ptr.* = 0;
         return 0;
     }
 
-    // If destination is large enough for full compression, just compress normally
-    const maxCompressed = compressBound(maxSrcSize);
-    if (dst.len >= maxCompressed) {
-        const result = try compressDefault(src[0..maxSrcSize], dst);
-        srcSizePtr.* = maxSrcSize;
+    // If the destination can hold the worst case, compress everything.
+    if (dst.len >= compressBound(max_src_size)) {
+        const result = try compressDefault(src[0..max_src_size], dst);
+        src_size_ptr.* = max_src_size;
         return result;
     }
 
-    // Binary search to find the largest input size that fits in dst
     var low: usize = 1;
-    var high: usize = maxSrcSize;
-    var bestSize: usize = 0;
-    var bestCompressedSize: usize = 0;
+    var high: usize = max_src_size;
+    var best_size: usize = 0;
+    var best_compressed_size: usize = 0;
 
-    // First, try a quick estimate: assume roughly 1:1 compression ratio
-    if (dst.len <= maxSrcSize) {
-        const estimate = @min(dst.len, maxSrcSize);
+    // Quick estimate first: assume a roughly 1:1 compression ratio.
+    if (dst.len <= max_src_size) {
+        const estimate = @min(dst.len, max_src_size);
         if (compressDefault(src[0..estimate], dst)) |size| {
             if (size <= dst.len) {
-                bestSize = estimate;
-                bestCompressedSize = size;
-                low = estimate + 1; // Try larger sizes
+                best_size = estimate;
+                best_compressed_size = size;
+                low = estimate + 1;
             } else {
-                high = estimate - 1; // Too large, try smaller
+                high = estimate - 1;
             }
         } else |_| {
             high = estimate - 1;
         }
     }
 
-    // Binary search for optimal size
+    // Binary search for the largest input size that fits.
     while (low <= high) {
         const mid = low + (high - low) / 2;
-        if (mid == 0 or mid > maxSrcSize) break;
+        if (mid == 0 or mid > max_src_size) break;
 
-        // Try compressing this amount
         if (compressDefault(src[0..mid], dst)) |size| {
             if (size <= dst.len) {
-                // Fits! Try larger
-                bestSize = mid;
-                bestCompressedSize = size;
-                if (mid == maxSrcSize) break; // Can't go larger
+                best_size = mid;
+                best_compressed_size = size;
+                if (mid == max_src_size) break;
                 low = mid + 1;
             } else {
-                // Too large, try smaller
                 high = mid - 1;
             }
         } else |_| {
-            // Compression failed, try smaller
             high = mid - 1;
         }
 
-        // Safety check: prevent infinite loop
-        if (low > maxSrcSize) break;
+        if (low > max_src_size) break;
     }
 
-    srcSizePtr.* = bestSize;
-    return bestCompressedSize;
+    src_size_ptr.* = best_size;
+    return best_compressed_size;
 }
 
-/// Decompress only the first targetOutputSize bytes
-pub fn decompressSafePartial(src: []const u8, dst: []u8, targetOutputSize: usize) Error!usize {
-    return decompressGeneric(src, dst, targetOutputSize, null, null);
+/// Decompress only the first `target_output_size` bytes.
+pub fn decompressSafePartial(src: []const u8, dst: []u8, target_output_size: usize) Error!usize {
+    return decompressGeneric(src, dst, target_output_size, true, null, null);
 }
-
-// Helper function to compress with a given hash table
-fn compressFastWithHashTable(src: []const u8, dst: []u8, acceleration: u32, hashTable: *HashTable) Error!usize {
-    const srcSize = src.len;
-    var ip: usize = 0;
-    var op: usize = 0;
-    var anchor: usize = 0;
-
-    const mflimitPlusOne = srcSize - MFLIMIT;
-    const matchLimit = srcSize - LASTLITERALS;
-
-    ip += 1;
-
-    while (ip < mflimitPlusOne) {
-        const accel = std.math.clamp(acceleration, 1, ACCELERATION_MAX);
-        var step: usize = accel;
-        var searchMatchNb: usize = accel;
-
-        var match: usize = undefined;
-        var forwardIp = ip;
-
-        while (true) {
-            ip = forwardIp;
-            forwardIp += step;
-            step = searchMatchNb >> 6;
-            searchMatchNb += 1;
-
-            if (forwardIp > mflimitPlusOne) {
-                return finishCompression(src, dst, anchor, op);
-            }
-
-            const h = hash4(readU32LE(src[ip..].ptr));
-            match = hashTable.get(h);
-
-            const is_valid_match = match > 0 and
-                match < ip and
-                match + LZ4_DISTANCE_ABSOLUTE_MAX >= ip and
-                readU32LE(src[match..].ptr) == readU32LE(src[ip..].ptr);
-
-            hashTable.put(h, @intCast(ip));
-
-            if (is_valid_match) {
-                break;
-            }
-        }
-
-        const literalLength = ip - anchor;
-        const tokenPos = op;
-        op += 1;
-        if (op >= dst.len) return error.OutputTooSmall;
-
-        if (literalLength >= RUN_MASK) {
-            dst[tokenPos] = RUN_MASK << ML_BITS;
-            var len = literalLength - RUN_MASK;
-            while (len >= 255) {
-                if (op >= dst.len) return error.OutputTooSmall;
-                dst[op] = 255;
-                op += 1;
-                len -= 255;
-            }
-            if (op >= dst.len) return error.OutputTooSmall;
-            dst[op] = @intCast(len);
-            op += 1;
-        } else {
-            dst[tokenPos] = @as(u8, @intCast(literalLength)) << ML_BITS;
-        }
-
-        if (op + literalLength > dst.len) return error.OutputTooSmall;
-        if (literalLength > 0) {
-            @memcpy(dst[op..][0..literalLength], src[anchor..][0..literalLength]);
-            op += literalLength;
-        }
-
-        const offset: u16 = @intCast(ip - match);
-        if (op + 2 > dst.len) return error.OutputTooSmall;
-        writeU16LE(dst[op..].ptr, offset);
-        op += 2;
-
-        ip += MINMATCH;
-        match += MINMATCH;
-        var matchLength: usize = 0;
-
-        while (ip < matchLimit) {
-            if (src[ip] == src[match]) {
-                ip += 1;
-                match += 1;
-                matchLength += 1;
-            } else {
-                break;
-            }
-        }
-
-        if (matchLength >= ML_MASK) {
-            dst[tokenPos] |= ML_MASK;
-            var len = matchLength - ML_MASK;
-            while (len >= 255) {
-                if (op >= dst.len) return error.OutputTooSmall;
-                dst[op] = 255;
-                op += 1;
-                len -= 255;
-            }
-            if (op >= dst.len) return error.OutputTooSmall;
-            dst[op] = @intCast(len);
-            op += 1;
-        } else {
-            dst[tokenPos] |= @intCast(matchLength);
-        }
-
-        anchor = ip;
-
-        if (ip < mflimitPlusOne) {
-            const h = hash4(readU32LE(src[ip..].ptr));
-            hashTable.put(h, @intCast(ip));
-            ip += 1;
-        }
-    }
-
-    return finishCompression(src, dst, anchor, op);
-}
-
-// ===== Streaming Compression =====
 
 const TableType = enum(u32) {
     byU32 = 1,
@@ -747,7 +475,7 @@ const TableType = enum(u32) {
     byPtr = 3,
 };
 
-/// LZ4 streaming compression context
+/// Streaming compression context.
 pub const Stream = struct {
     hashTable: [LZ4_HASH_SIZE_U32]u32,
     dictionary: ?[]const u8,
@@ -757,7 +485,6 @@ pub const Stream = struct {
     dictSize: u32,
     allocator: ?Allocator,
 
-    /// Create a new streaming compression context
     pub fn create(allocator: Allocator) Error!*Stream {
         const stream = allocator.create(Stream) catch return error.AllocationFailed;
         stream.* = init();
@@ -765,14 +492,13 @@ pub const Stream = struct {
         return stream;
     }
 
-    /// Free a streaming compression context
     pub fn destroy(self: *Stream) void {
-        if (self.allocator) |alloc| {
-            alloc.destroy(self);
+        if (self.allocator) |allocator| {
+            allocator.destroy(self);
         }
     }
 
-    /// Initialize a stream (for stack-allocated streams)
+    /// Initialize a stream in place (for stack-allocated streams).
     pub fn init() Stream {
         return .{
             .hashTable = @splat(0),
@@ -785,7 +511,7 @@ pub const Stream = struct {
         };
     }
 
-    /// Reset stream for new compression
+    /// Reset the stream for a new compression.
     pub fn resetFast(self: *Stream) void {
         @memset(&self.hashTable, 0);
         self.dictionary = null;
@@ -794,79 +520,66 @@ pub const Stream = struct {
         self.dictSize = 0;
     }
 
-    /// Load dictionary into stream
+    /// Load a dictionary; only the last 64 KiB are kept.
+    /// Returns the number of dictionary bytes retained.
     pub fn loadDict(self: *Stream, dict: []const u8) usize {
         self.resetFast();
 
         if (dict.len == 0) return 0;
 
-        // Only keep last 64KB
-        const dictSize = @min(dict.len, 64 * 1024);
-        const dictStart = dict.len - dictSize;
-        self.dictionary = dict[dictStart..];
-        self.dictSize = @intCast(dictSize);
+        const dict_size = @min(dict.len, 64 * 1024);
+        const dict_start = dict.len - dict_size;
+        self.dictionary = dict[dict_start..];
+        self.dictSize = @intCast(dict_size);
 
-        // Hash the dictionary
-        if (dictSize >= MINMATCH) {
-            var i: usize = 0;
-            while (i < dictSize - MINMATCH) : (i += 1) {
-                const h = hash4(readU32LE(dict[dictStart + i ..].ptr));
+        if (dict_size >= MINMATCH) {
+            for (0..dict_size - MINMATCH) |i| {
+                const h = hash4(readU32(dict[dict_start + i ..]));
                 self.hashTable[h] = @intCast(i);
             }
         }
 
-        return dictSize;
+        return dict_size;
     }
 
-    /// Compress next block in stream
+    /// Compress the next block in the stream.
     pub fn compressFastContinue(self: *Stream, src: []const u8, dst: []u8, acceleration: u32) Error!usize {
         if (src.len > LZ4_MAX_INPUT_SIZE) return error.InputTooLarge;
         if (src.len == 0) return 0;
-        if (src.len < MFLIMIT + 1) {
-            return compressAsLiterals(src, dst);
-        }
+        if (src.len < MFLIMIT + 1) return emitLastLiterals(src, dst, 0, 0);
 
-        // Use the stream's hash table
-        var hashTable = HashTable{ .table = self.hashTable };
-        const result = try compressFastWithHashTable(src, dst, acceleration, &hashTable);
-        self.hashTable = hashTable.table;
+        var hash_table = HashTable{ .table = self.hashTable };
+        const result = try compressFastWithHashTable(src, dst, acceleration, &hash_table);
+        self.hashTable = hash_table.table;
         self.currentOffset +|= @intCast(src.len);
 
         return result;
     }
 
-    /// Save dictionary to safe buffer
-    pub fn saveDict(self: *Stream, safeBuffer: []u8, maxDictSize: usize) usize {
-        if (maxDictSize == 0) return 0;
-        if (self.dictionary == null) return 0;
+    /// Save the dictionary into a caller-owned buffer.
+    /// Returns the number of bytes saved.
+    pub fn saveDict(self: *Stream, safe_buffer: []u8, max_dict_size: usize) usize {
+        if (max_dict_size == 0) return 0;
+        const dict = self.dictionary orelse return 0;
 
-        const dict = self.dictionary.?;
-        const dictSize = @min(@min(dict.len, maxDictSize), 64 * 1024);
-
-        if (dictSize > safeBuffer.len) {
-            const copySize = @min(dictSize, safeBuffer.len);
-            @memcpy(safeBuffer[0..copySize], dict[dict.len - copySize ..]);
-            return copySize;
-        }
-
-        @memcpy(safeBuffer[0..dictSize], dict[dict.len - dictSize ..]);
-        return dictSize;
+        const dict_size = @min(@min(dict.len, max_dict_size), 64 * 1024);
+        const copy_size = @min(dict_size, safe_buffer.len);
+        @memcpy(safe_buffer[0..copy_size], dict[dict.len - copy_size ..]);
+        return copy_size;
     }
 };
 
-/// Create streaming compression context (convenience wrapper)
+/// Create a streaming compression context.
 pub fn createStream(allocator: Allocator) Error!*Stream {
     return Stream.create(allocator);
 }
 
-/// Free streaming compression context (convenience wrapper)
+/// Free a streaming compression context.
 pub fn freeStream(stream: *Stream) void {
     stream.destroy();
 }
 
-// ===== Streaming Decompression =====
-
-/// LZ4 streaming decompression context
+/// Streaming decompression context.
 pub const StreamDecode = struct {
     externalDict: ?[]const u8,
     prefixEnd: ?[]const u8,
@@ -874,7 +587,6 @@ pub const StreamDecode = struct {
     prefixSize: usize,
     allocator: ?Allocator,
 
-    /// Create new streaming decompression context
     pub fn create(allocator: Allocator) Error!*StreamDecode {
         const stream = allocator.create(StreamDecode) catch return error.AllocationFailed;
         stream.* = init();
@@ -882,14 +594,13 @@ pub const StreamDecode = struct {
         return stream;
     }
 
-    /// Free streaming decompression context
     pub fn destroy(self: *StreamDecode) void {
-        if (self.allocator) |alloc| {
-            alloc.destroy(self);
+        if (self.allocator) |allocator| {
+            allocator.destroy(self);
         }
     }
 
-    /// Initialize a decode stream
+    /// Initialize a decode stream in place.
     pub fn init() StreamDecode {
         return .{
             .externalDict = null,
@@ -900,7 +611,7 @@ pub const StreamDecode = struct {
         };
     }
 
-    /// Set dictionary for decompression
+    /// Set the dictionary for subsequent decompression.
     pub fn setStreamDecode(self: *StreamDecode, dict: ?[]const u8) void {
         self.externalDict = dict;
         self.prefixEnd = null;
@@ -908,63 +619,52 @@ pub const StreamDecode = struct {
         self.prefixSize = 0;
     }
 
-    /// Decompress next block in stream
+    /// Decompress the next block in the stream.
     pub fn decompressSafeContinue(self: *StreamDecode, src: []const u8, dst: []u8) Error!usize {
-        // On first call (no prefix), decompress normally
         if (self.prefixSize == 0 and self.extDictSize == 0) {
             const result = try decompressSafe(src, dst);
-            // Update prefix for next call
             self.prefixEnd = dst[0..result];
             self.prefixSize = result;
             return result;
         }
 
-        // Determine lowPrefix pointer based on context
-        const lowPrefix: [*]const u8 = if (self.prefixEnd) |prefix|
-            prefix.ptr
-        else
-            dst.ptr;
-
-        // Use external dictionary if present
+        const low_prefix: [*]const u8 = if (self.prefixEnd) |prefix| prefix.ptr else dst.ptr;
         const dict: ?[]const u8 = if (self.extDictSize > 0) self.externalDict else null;
 
-        const result = try decompressGeneric(src, dst, dst.len, lowPrefix, dict);
+        const result = try decompressGeneric(src, dst, dst.len, false, low_prefix, dict);
 
-        // Update prefix for next call
         self.prefixEnd = dst[0..result];
         self.prefixSize = result;
-        self.externalDict = null; // Dictionary only used once
+        // The dictionary is only used once.
+        self.externalDict = null;
         self.extDictSize = 0;
 
         return result;
     }
 };
 
-/// Create streaming decompression context (convenience wrapper)
+/// Create a streaming decompression context.
 pub fn createStreamDecode(allocator: Allocator) Error!*StreamDecode {
     return StreamDecode.create(allocator);
 }
 
-/// Free streaming decompression context (convenience wrapper)
+/// Free a streaming decompression context.
 pub fn freeStreamDecode(stream: *StreamDecode) void {
     stream.destroy();
 }
 
-/// Calculate decoder ring buffer size
-pub fn decoderRingBufferSize(maxBlockSize: usize) usize {
-    if (maxBlockSize == 0) return 0;
-    return 65536 + 14 + maxBlockSize;
+/// Size of the ring buffer needed for streaming decompression.
+pub fn decoderRingBufferSize(max_block_size: usize) usize {
+    if (max_block_size == 0) return 0;
+    return 65536 + 14 + max_block_size;
 }
 
-/// Decompress using dictionary (stateless)
+/// Decompress with an external dictionary (stateless).
 pub fn decompressSafeUsingDict(src: []const u8, dst: []u8, dict: []const u8) Error!usize {
-    // Decompress with dictionary support
-    // The dictionary is treated as data that precedes the current block
-    return decompressGeneric(src, dst, dst.len, dst.ptr, dict);
+    return decompressGeneric(src, dst, dst.len, false, dst.ptr, dict);
 }
 
-/// Partial decompress using dictionary (stateless)
-pub fn decompressSafePartialUsingDict(src: []const u8, dst: []u8, targetOutputSize: usize, dict: []const u8) Error!usize {
-    // Partial decompression with dictionary support
-    return decompressGeneric(src, dst, targetOutputSize, dst.ptr, dict);
+/// Partially decompress with an external dictionary (stateless).
+pub fn decompressSafePartialUsingDict(src: []const u8, dst: []u8, target_output_size: usize, dict: []const u8) Error!usize {
+    return decompressGeneric(src, dst, target_output_size, true, dst.ptr, dict);
 }

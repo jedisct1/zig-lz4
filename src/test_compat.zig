@@ -63,13 +63,9 @@ const TestData = struct {
     }
 };
 
-pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
-
-    // Initialize threaded IO with a real allocator for process spawning
-    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     std.debug.print("\n=== LZ4 Reference Compatibility Test Suite ===\n\n", .{});
 
