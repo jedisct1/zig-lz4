@@ -17,6 +17,7 @@ pub fn main() !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
     try stdout.print("\nLZ4F + HC Integration Test Suite\n", .{});
     try stdout.print("=================================\n\n", .{});
@@ -35,19 +36,16 @@ fn testHCCompression(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     const input = repeatString(10, "Hello, World! This is a test of LZ4 HC with frame compression. ");
 
-    // Test fast mode (level 0) vs HC mode (level 9)
     const prefs_fast = lz4f.Preferences{ .compressionLevel = 0 };
     const prefs_hc = lz4f.Preferences{ .compressionLevel = 9 };
 
-    // Compress with fast mode
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs_fast);
-    const compressed_fast = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs_fast);
+    const compressed_fast = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed_fast);
 
     const size_fast = try lz4f.compressFrame(allocator, input, compressed_fast, prefs_fast);
 
-    // Compress with HC
-    const compressed_hc = try allocator.alloc(u8, maxCompressed);
+    const compressed_hc = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed_hc);
 
     const size_hc = try lz4f.compressFrame(allocator, input, compressed_hc, prefs_hc);
@@ -65,7 +63,6 @@ fn testHCCompression(allocator: std.mem.Allocator, stdout: anytype) !void {
         100.0 - (@as(f64, @floatFromInt(size_hc)) / @as(f64, @floatFromInt(size_fast)) * 100.0),
     });
 
-    // Decompress both and verify
     const decompressed = try allocator.alloc(u8, input.len * 2);
     defer allocator.free(decompressed);
 
@@ -100,23 +97,23 @@ fn testHCAllLevels(allocator: std.mem.Allocator, stdout: anytype) !void {
     while (level <= 12) : (level += 1) {
         const prefs = lz4f.Preferences{ .compressionLevel = level };
 
-        const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-        const compressed = try allocator.alloc(u8, maxCompressed);
+        const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+        const compressed = try allocator.alloc(u8, max_compressed);
         defer allocator.free(compressed);
 
-        const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
+        const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
 
-        const decompressedSize = try lz4f.decompressFrame(
+        const decompressed_size = try lz4f.decompressFrame(
             allocator,
-            compressed[0..compressedSize],
+            compressed[0..compressed_size],
             decompressed,
         );
 
-        try testing.expectEqual(input.len, decompressedSize);
-        try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+        try testing.expectEqual(input.len, decompressed_size);
+        try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
-        const ratio = @as(f64, @floatFromInt(input.len)) / @as(f64, @floatFromInt(compressedSize));
-        try stdout.print("  Level {:2}: {} bytes, ratio: {d:.2}x\n", .{ level, compressedSize, ratio });
+        const ratio = @as(f64, @floatFromInt(input.len)) / @as(f64, @floatFromInt(compressed_size));
+        try stdout.print("  Level {:2}: {} bytes, ratio: {d:.2}x\n", .{ level, compressed_size, ratio });
     }
 
     try stdout.print("  ✓ All levels work correctly\n\n", .{});
@@ -135,37 +132,33 @@ fn testHCWithChecksums(allocator: std.mem.Allocator, stdout: anytype) !void {
         },
     };
 
-    // Compress
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
-    try stdout.print("  Compressed: {} bytes\n", .{compressedSize});
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
+    try stdout.print("  Compressed: {} bytes\n", .{compressed_size});
 
-    // Decompress
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
     try stdout.print("  ✓ HC works with checksums\n\n", .{});
 }
 
 fn testHCLargeInput(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 4: HC with large input (multiple blocks)\n", .{});
 
-    // Create 1MB of data
-    const inputSize = 1024 * 1024;
-    const input = try allocator.alloc(u8, inputSize);
+    const input_size = 1024 * 1024;
+    const input = try allocator.alloc(u8, input_size);
     defer allocator.free(input);
 
-    // Fill with repetitive pattern
     for (input, 0..) |*byte, i| {
         byte.* = @truncate(i / 256);
     }
@@ -177,30 +170,28 @@ fn testHCLargeInput(allocator: std.mem.Allocator, stdout: anytype) !void {
         },
     };
 
-    // Compress
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
-    try stdout.print("  Original: {} bytes\n", .{inputSize});
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
+    try stdout.print("  Original: {} bytes\n", .{input_size});
     try stdout.print("  Compressed: {} bytes ({d:.1}x ratio)\n", .{
-        compressedSize,
-        @as(f64, @floatFromInt(inputSize)) / @as(f64, @floatFromInt(compressedSize)),
+        compressed_size,
+        @as(f64, @floatFromInt(input_size)) / @as(f64, @floatFromInt(compressed_size)),
     });
 
-    // Decompress
-    const decompressed = try allocator.alloc(u8, inputSize);
+    const decompressed = try allocator.alloc(u8, input_size);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqual(inputSize, decompressedSize);
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqual(input_size, decompressed_size);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
     try stdout.print("  ✓ Large input with multiple blocks works\n\n", .{});
 }
 
@@ -219,23 +210,20 @@ fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !v
         },
     };
 
-    // Compress with our implementation
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
 
-    // Write to temp file
-    const tmpDir = std.Io.Dir.cwd();
-    const tmpFile = try tmpDir.createFile(io, "test_hc_frame_compressed.lz4", .{});
-    defer tmpFile.close(io);
-    defer tmpDir.deleteFile(io, "test_hc_frame_compressed.lz4") catch {};
+    const tmp_dir = std.Io.Dir.cwd();
+    const tmp_file = try tmp_dir.createFile(io, "test_hc_frame_compressed.lz4", .{});
+    defer tmp_file.close(io);
+    defer tmp_dir.deleteFile(io, "test_hc_frame_compressed.lz4") catch {};
 
-    try tmpFile.writeStreamingAll(io, compressed[0..compressedSize]);
+    try tmp_file.writeStreamingAll(io, compressed[0..compressed_size]);
     try stdout.print("  Wrote compressed data to test_hc_frame_compressed.lz4\n", .{});
 
-    // Try to decompress with reference lz4 tool
     try stdout.print("  Running: lz4 -d -f --content-size test_hc_frame_compressed.lz4 test_hc_frame_decompressed.txt\n", .{});
 
     const result = std.process.run(allocator, io, .{
@@ -261,10 +249,9 @@ fn testHCValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !v
         return error.ReferenceValidationFailed;
     }
 
-    // Read decompressed data
-    const decompressed = try tmpDir.readFileAlloc(io, "test_hc_frame_decompressed.txt", allocator, .unlimited);
+    const decompressed = try tmp_dir.readFileAlloc(io, "test_hc_frame_decompressed.txt", allocator, .unlimited);
     defer allocator.free(decompressed);
-    defer tmpDir.deleteFile(io, "test_hc_frame_decompressed.txt") catch {};
+    defer tmp_dir.deleteFile(io, "test_hc_frame_decompressed.txt") catch {};
 
     try testing.expectEqualSlices(u8, input, decompressed);
     try stdout.print("  ✓ Reference lz4 tool successfully decompressed HC frame\n\n", .{});

@@ -20,7 +20,7 @@ All code is pure Zig with no C dependencies. The implementation follows the same
 
 ## Requirements
 
-- Zig 0.15.1 or newer
+- Zig 0.16.0 or newer
 
 ## Usage
 
@@ -52,9 +52,7 @@ const lz4 = @import("lz4");
 const std = @import("std");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
     const input = "Hello, World!";
 
@@ -94,33 +92,22 @@ The frame format adds checksums and is what the `lz4` command-line tool uses:
 ```zig
 const lz4 = @import("lz4");
 
-// Compression context
-var cctx = try lz4.lz4f.createCompressionContext(allocator);
-defer lz4.lz4f.freeCompressionContext(cctx);
+// Compress a whole frame in one shot
+const bound = lz4.lz4f.compressFrameBound(input.len, null);
+const frame = try allocator.alloc(u8, bound);
+defer allocator.free(frame);
 
-// Write frame header
-var prefs = lz4.lz4f.Preferences.init();
-const header_size = try lz4.lz4f.compressBegin(
-    cctx,
-    output_buffer,
-    &prefs,
-);
+const frame_size = try lz4.lz4f.compressFrame(allocator, input, frame, null);
 
-// Compress data
-const compressed_size = try lz4.lz4f.compressUpdate(
-    cctx,
-    output_buffer[header_size..],
-    input_data,
-    null,
-);
+// Decompress it back
+const decompressed = try allocator.alloc(u8, input.len);
+defer allocator.free(decompressed);
 
-// Finish frame
-const end_size = try lz4.lz4f.compressEnd(
-    cctx,
-    output_buffer[header_size + compressed_size..],
-    null,
-);
+const size = try lz4.lz4f.decompressFrame(allocator, frame[0..frame_size], decompressed);
 ```
+
+Pass a `lz4.lz4f.Preferences` value instead of `null` to pick the block size,
+enable checksums, or use an HC compression level.
 
 ## Building and testing
 
@@ -137,7 +124,7 @@ zig build test-compat
 zig build
 ```
 
-The test suite includes compatibility tests against the reference `lz4` implementation to verify the output is byte-for-byte identical.
+The test suite includes compatibility tests against the reference `lz4` tool: frames produced by this library are decompressed with `lz4`, and vice versa, at every compression level. The `test-compat` step needs the `lz4` command-line tool installed.
 
 ## Compatibility
 

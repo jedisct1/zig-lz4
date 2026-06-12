@@ -2,7 +2,6 @@
 
 const std = @import("std");
 const lz4f = @import("lz4f.zig");
-const testing = std.testing;
 
 inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
     const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
@@ -15,20 +14,18 @@ pub fn main() !void {
     std.debug.print("\nLZ4F + HC Integration Test\n", .{});
     std.debug.print("===========================\n\n", .{});
 
-    // Test 1: Basic HC compression
     std.debug.print("Test 1: Basic HC compression\n", .{});
 
     const input = repeatString(10, "Hello, World! ");
 
     const prefs_hc = lz4f.Preferences{ .compressionLevel = 9 };
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs_hc);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs_hc);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
     const size_hc = try lz4f.compressFrame(allocator, input, compressed, prefs_hc);
     std.debug.print("  Compressed: {} bytes\n", .{size_hc});
 
-    // Decompress
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 

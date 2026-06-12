@@ -17,6 +17,7 @@ pub fn main() !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
     try stdout.print("\nLZ4F Frame Format - Test Suite\n", .{});
     try stdout.print("===============================\n\n", .{});
@@ -38,34 +39,31 @@ fn testBasicCompression(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     const input = "Hello, World! This is a test of LZ4 frame compression.";
 
-    // Compress
-    const maxCompressed = lz4f.compressFrameBound(input.len, null);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, null);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, null);
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, null);
     try stdout.print("  Original: {} bytes\n", .{input.len});
     try stdout.print("  Compressed: {} bytes ({d:.1}%)\n", .{
-        compressedSize,
-        @as(f64, @floatFromInt(compressedSize)) / @as(f64, @floatFromInt(input.len)) * 100.0,
+        compressed_size,
+        @as(f64, @floatFromInt(compressed_size)) / @as(f64, @floatFromInt(input.len)) * 100.0,
     });
 
-    // Verify magic number
     const magic = std.mem.readInt(u32, compressed[0..4], .little);
     try testing.expectEqual(lz4f.MAGICNUMBER, magic);
 
-    // Decompress
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqual(input.len, decompressedSize);
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqual(input.len, decompressed_size);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
     try stdout.print("  ✓ PASS\n\n", .{});
 }
@@ -75,30 +73,29 @@ fn testEmptyInput(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     const input = "";
 
-    const maxCompressed = lz4f.compressFrameBound(input.len, null);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, null);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, null);
-    try stdout.print("  Empty frame size: {} bytes\n", .{compressedSize});
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, null);
+    try stdout.print("  Empty frame size: {} bytes\n", .{compressed_size});
 
     const decompressed = try allocator.alloc(u8, 1024);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqual(@as(usize, 0), decompressedSize);
+    try testing.expectEqual(@as(usize, 0), decompressed_size);
     try stdout.print("  ✓ PASS\n\n", .{});
 }
 
 fn testLargeInput(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 3: Large input (multiple blocks)\n", .{});
 
-    // Create 1MB of test data
     const size = 1024 * 1024;
     const input = try allocator.alloc(u8, size);
     defer allocator.free(input);
@@ -108,28 +105,28 @@ fn testLargeInput(allocator: std.mem.Allocator, stdout: anytype) !void {
         byte.* = @truncate((i / 16) % 256);
     }
 
-    const maxCompressed = lz4f.compressFrameBound(input.len, null);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, null);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, null);
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, null);
     try stdout.print("  Original: {} bytes\n", .{input.len});
     try stdout.print("  Compressed: {} bytes ({d:.1}%)\n", .{
-        compressedSize,
-        @as(f64, @floatFromInt(compressedSize)) / @as(f64, @floatFromInt(input.len)) * 100.0,
+        compressed_size,
+        @as(f64, @floatFromInt(compressed_size)) / @as(f64, @floatFromInt(input.len)) * 100.0,
     });
 
     const decompressed = try allocator.alloc(u8, size);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqual(input.len, decompressedSize);
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqual(input.len, decompressed_size);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
     try stdout.print("  ✓ PASS\n\n", .{});
 }
@@ -144,40 +141,38 @@ fn testContentChecksum(allocator: std.mem.Allocator, stdout: anytype) !void {
         },
     };
 
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
-    try stdout.print("  Compressed with checksum: {} bytes\n", .{compressedSize});
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
+    try stdout.print("  Compressed with checksum: {} bytes\n", .{compressed_size});
 
-    // Verify frame has content checksum (should be 4 bytes larger than without)
-    const noChecksumSize = lz4f.compressFrameBound(input.len, null);
+    const no_checksum_size = lz4f.compressFrameBound(input.len, null);
     try stdout.print("  Size difference: {} bytes\n", .{
-        @as(isize, @intCast(maxCompressed)) - @as(isize, @intCast(noChecksumSize)),
+        @as(isize, @intCast(max_compressed)) - @as(isize, @intCast(no_checksum_size)),
     });
 
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
-    // Test checksum corruption detection
-    const corruptedCompressed = try allocator.dupe(u8, compressed[0..compressedSize]);
-    defer allocator.free(corruptedCompressed);
+    const corrupted_compressed = try allocator.dupe(u8, compressed[0..compressed_size]);
+    defer allocator.free(corrupted_compressed);
 
     // Corrupt the last byte (checksum)
-    corruptedCompressed[corruptedCompressed.len - 1] ^= 0xFF;
+    corrupted_compressed[corrupted_compressed.len - 1] ^= 0xFF;
 
     const result = lz4f.decompressFrame(
         allocator,
-        corruptedCompressed,
+        corrupted_compressed,
         decompressed,
     );
     try testing.expectError(lz4f.Error.ContentChecksumInvalid, result);
@@ -196,23 +191,23 @@ fn testBlockChecksum(allocator: std.mem.Allocator, stdout: anytype) !void {
         },
     };
 
-    const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-    const compressed = try allocator.alloc(u8, maxCompressed);
+    const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+    const compressed = try allocator.alloc(u8, max_compressed);
     defer allocator.free(compressed);
 
-    const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
-    try stdout.print("  Compressed with block checksum: {} bytes\n", .{compressedSize});
+    const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
+    try stdout.print("  Compressed with block checksum: {} bytes\n", .{compressed_size});
 
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 
-    const decompressedSize = try lz4f.decompressFrame(
+    const decompressed_size = try lz4f.decompressFrame(
         allocator,
-        compressed[0..compressedSize],
+        compressed[0..compressed_size],
         decompressed,
     );
 
-    try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+    try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
     try stdout.print("  ✓ PASS\n\n", .{});
 }
@@ -221,38 +216,38 @@ fn testDifferentBlockSizes(allocator: std.mem.Allocator, stdout: anytype) !void 
     try stdout.print("Test 6: Different block sizes\n", .{});
 
     const input = &@as([1000]u8, @splat('A'));
-    const blockSizes = [_]lz4f.BlockSizeID{
+    const block_sizes = [_]lz4f.BlockSizeID{
         .max64KB,
         .max256KB,
         .max1MB,
         .max4MB,
     };
 
-    for (blockSizes) |blockSize| {
+    for (block_sizes) |block_size| {
         const prefs = lz4f.Preferences{
             .frameInfo = .{
-                .blockSizeID = blockSize,
+                .blockSizeID = block_size,
             },
         };
 
-        const maxCompressed = lz4f.compressFrameBound(input.len, prefs);
-        const compressed = try allocator.alloc(u8, maxCompressed);
+        const max_compressed = lz4f.compressFrameBound(input.len, prefs);
+        const compressed = try allocator.alloc(u8, max_compressed);
         defer allocator.free(compressed);
 
-        const compressedSize = try lz4f.compressFrame(allocator, input, compressed, prefs);
+        const compressed_size = try lz4f.compressFrame(allocator, input, compressed, prefs);
 
         const decompressed = try allocator.alloc(u8, input.len);
         defer allocator.free(decompressed);
 
-        const decompressedSize = try lz4f.decompressFrame(
+        const decompressed_size = try lz4f.decompressFrame(
             allocator,
-            compressed[0..compressedSize],
+            compressed[0..compressed_size],
             decompressed,
         );
 
-        try testing.expectEqualSlices(u8, input, decompressed[0..decompressedSize]);
+        try testing.expectEqualSlices(u8, input, decompressed[0..decompressed_size]);
 
-        try stdout.print("  Block size {}: {} bytes compressed\n", .{ blockSize, compressedSize });
+        try stdout.print("  Block size {}: {} bytes compressed\n", .{ block_size, compressed_size });
     }
 
     try stdout.print("  ✓ PASS\n\n", .{});
@@ -261,52 +256,49 @@ fn testDifferentBlockSizes(allocator: std.mem.Allocator, stdout: anytype) !void 
 fn testIndependentBlocks(allocator: std.mem.Allocator, stdout: anytype) !void {
     try stdout.print("Test 7: Independent vs linked blocks\n", .{});
 
-    const input = repeatString(100, "Hello "); // Repeated pattern
+    const input = repeatString(100, "Hello ");
 
-    // Test linked blocks (default)
-    const linkedPrefs = lz4f.Preferences{
+    const linked_prefs = lz4f.Preferences{
         .frameInfo = .{
             .blockMode = .linked,
         },
     };
-    const maxLinked = lz4f.compressFrameBound(input.len, linkedPrefs);
-    const linkedCompressed = try allocator.alloc(u8, maxLinked);
-    defer allocator.free(linkedCompressed);
+    const max_linked = lz4f.compressFrameBound(input.len, linked_prefs);
+    const linked_compressed = try allocator.alloc(u8, max_linked);
+    defer allocator.free(linked_compressed);
 
-    const linkedSize = try lz4f.compressFrame(allocator, input, linkedCompressed, linkedPrefs);
+    const linked_size = try lz4f.compressFrame(allocator, input, linked_compressed, linked_prefs);
 
-    // Test independent blocks
-    const indepPrefs = lz4f.Preferences{
+    const indep_prefs = lz4f.Preferences{
         .frameInfo = .{
             .blockMode = .independent,
         },
     };
-    const maxIndep = lz4f.compressFrameBound(input.len, indepPrefs);
-    const indepCompressed = try allocator.alloc(u8, maxIndep);
-    defer allocator.free(indepCompressed);
+    const max_indep = lz4f.compressFrameBound(input.len, indep_prefs);
+    const indep_compressed = try allocator.alloc(u8, max_indep);
+    defer allocator.free(indep_compressed);
 
-    const indepSize = try lz4f.compressFrame(allocator, input, indepCompressed, indepPrefs);
+    const indep_size = try lz4f.compressFrame(allocator, input, indep_compressed, indep_prefs);
 
-    try stdout.print("  Linked blocks: {} bytes\n", .{linkedSize});
-    try stdout.print("  Independent blocks: {} bytes\n", .{indepSize});
+    try stdout.print("  Linked blocks: {} bytes\n", .{linked_size});
+    try stdout.print("  Independent blocks: {} bytes\n", .{indep_size});
 
-    // Verify both decompress correctly
     const decompressed = try allocator.alloc(u8, input.len);
     defer allocator.free(decompressed);
 
-    const linkedDecomp = try lz4f.decompressFrame(
+    const linked_decomp = try lz4f.decompressFrame(
         allocator,
-        linkedCompressed[0..linkedSize],
+        linked_compressed[0..linked_size],
         decompressed,
     );
-    try testing.expectEqualSlices(u8, input, decompressed[0..linkedDecomp]);
+    try testing.expectEqualSlices(u8, input, decompressed[0..linked_decomp]);
 
-    const indepDecomp = try lz4f.decompressFrame(
+    const indep_decomp = try lz4f.decompressFrame(
         allocator,
-        indepCompressed[0..indepSize],
+        indep_compressed[0..indep_size],
         decompressed,
     );
-    try testing.expectEqualSlices(u8, input, decompressed[0..indepDecomp]);
+    try testing.expectEqualSlices(u8, input, decompressed[0..indep_decomp]);
 
     try stdout.print("  ✓ PASS\n\n", .{});
 }
@@ -316,45 +308,41 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
 
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    // Create test data file
-    const testData = repeatString(20, "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. ");
-    const testFile = "/tmp/zig_lz4f_test.txt";
-    const compressedFile = "/tmp/zig_lz4f_test.txt.lz4";
-    const decompressedFile = "/tmp/zig_lz4f_test.txt.lz4.dec";
+    const test_data = repeatString(20, "Hello, World! This is a comprehensive test of the LZ4 frame format implementation. ");
+    const test_file = "/tmp/zig_lz4f_test.txt";
+    const compressed_file = "/tmp/zig_lz4f_test.txt.lz4";
+    const decompressed_file = "/tmp/zig_lz4f_test.txt.lz4.dec";
 
-    // Write test data
     {
-        const file = try std.Io.Dir.createFileAbsolute(io, testFile, .{});
+        const file = try std.Io.Dir.createFileAbsolute(io, test_file, .{});
         defer file.close(io);
-        try file.writeStreamingAll(io, testData);
+        try file.writeStreamingAll(io, test_data);
     }
 
-    // Compress with our implementation
     {
-        const data = try std.Io.Dir.cwd().readFileAlloc(io, testFile, allocator, .unlimited);
+        const data = try std.Io.Dir.cwd().readFileAlloc(io, test_file, allocator, .unlimited);
         defer allocator.free(data);
 
-        const maxCompressed = lz4f.compressFrameBound(data.len, null);
-        const compressed = try allocator.alloc(u8, maxCompressed);
+        const max_compressed = lz4f.compressFrameBound(data.len, null);
+        const compressed = try allocator.alloc(u8, max_compressed);
         defer allocator.free(compressed);
 
-        const compressedSize = try lz4f.compressFrame(allocator, data, compressed, null);
+        const compressed_size = try lz4f.compressFrame(allocator, data, compressed, null);
 
-        const outFile = try std.Io.Dir.createFileAbsolute(io, compressedFile, .{});
-        defer outFile.close(io);
-        try outFile.writeStreamingAll(io, compressed[0..compressedSize]);
+        const out_file = try std.Io.Dir.createFileAbsolute(io, compressed_file, .{});
+        defer out_file.close(io);
+        try out_file.writeStreamingAll(io, compressed[0..compressed_size]);
     }
 
     try stdout.print("  Compressed test file with Zig implementation\n", .{});
 
-    // Try to decompress with reference lz4 command
     const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "lz4",
             "-d",
             "-f", // Force overwrite
-            compressedFile,
-            decompressedFile,
+            compressed_file,
+            decompressed_file,
         },
     }) catch |err| {
         try stdout.print("  ! Reference lz4 command not available ({})\n", .{err});
@@ -380,16 +368,14 @@ fn testValidateWithReference(allocator: std.mem.Allocator, stdout: anytype) !voi
 
     try stdout.print("  Reference lz4 decompressed successfully\n", .{});
 
-    // Verify decompressed data matches original
-    const decompressed = try std.Io.Dir.cwd().readFileAlloc(io, decompressedFile, allocator, .unlimited);
+    const decompressed = try std.Io.Dir.cwd().readFileAlloc(io, decompressed_file, allocator, .unlimited);
     defer allocator.free(decompressed);
 
-    try testing.expectEqualSlices(u8, testData, decompressed);
+    try testing.expectEqualSlices(u8, test_data, decompressed);
 
-    // Clean up
-    std.Io.Dir.deleteFileAbsolute(io, testFile) catch {};
-    std.Io.Dir.deleteFileAbsolute(io, compressedFile) catch {};
-    std.Io.Dir.deleteFileAbsolute(io, decompressedFile) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, test_file) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, compressed_file) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, decompressed_file) catch {};
 
     try stdout.print("  ✓ Data validated against reference implementation\n", .{});
     try stdout.print("  ✓ PASS\n\n", .{});
